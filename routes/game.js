@@ -9,22 +9,41 @@ import { generateStoryBeat } from '../ai/gemini.js';
 import { generateSceneImage } from '../ai/nanobanana.js';
 import { getMusicForMood, getAvailableMoods } from '../ai/lyria.js';
 import { detectDiceRoll } from '../vision/dice_detection.js';
+import {
+  getCampaign,
+  appendEvent,
+  addLocation,
+  getOrCreateDefaultCampaign,
+  resetCampaign,
+  getEventCount,
+  campaignExists,
+  listCampaigns,
+  createCampaign,
+} from '../db/index.js';
 
 const router = Router();
 
-// ── In-memory campaign state (world memory) ──
-let campaign = {
-  characters: [
-    { name: 'Thorn', role: 'Shadow Ranger', description: 'A hooded figure with silver eyes' },
-  ],
-  locations: ['The Rusty Chalice Tavern'],
-  events: [],
-};
+function resolveCampaignId(req) {
+  const id = req.body?.campaignId ?? req.query?.campaignId;
+  if (id != null) {
+    const num = Number(id);
+    if (Number.isNaN(num) || !campaignExists(num)) {
+      return null;
+    }
+    return num;
+  }
+  return getOrCreateDefaultCampaign();
+}
 
 // ── POST /api/action — Main game loop endpoint ──
 // This is the core pipeline: action → narration → image → music
 router.post('/action', async (req, res) => {
   const startTime = Date.now();
+  const campaignId = resolveCampaignId(req);
+  if (campaignId === null) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+
   const { action, diceRoll, webcamFrame } = req.body;
 
   if (!action) {
@@ -32,6 +51,8 @@ router.post('/action', async (req, res) => {
   }
 
   try {
+    const campaign = getCampaign(campaignId);
+
     // Step 1: Detect dice if webcam frame provided
     let resolvedDice = diceRoll || null;
     if (webcamFrame && !diceRoll) {
@@ -50,7 +71,7 @@ router.post('/action', async (req, res) => {
       getMusicForMood(storyBeat.music_mood),
     ]);
 
-    // Step 5: Update world memory
+    // Step 5: Update world memory in DB
     const event = {
       action,
       diceRoll: resolvedDice,
@@ -60,25 +81,32 @@ router.post('/action', async (req, res) => {
       location: storyBeat.location || 'Unknown',
       timestamp: Date.now(),
     };
-    campaign.events.push(event);
+    appendEvent(campaignId, event);
+    addLocation(campaignId, storyBeat.location);
 
-    // Update known locations
-    if (storyBeat.location && !campaign.locations.includes(storyBeat.location)) {
-      campaign.locations.push(storyBeat.location);
-    }
-
+    const eventNumber = getEventCount(campaignId);
     const elapsed = Date.now() - startTime;
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const musicPayload = { ...musicResult };
+    if (musicResult.audioUrl && musicResult.audioUrl.startsWith('http')) {
+      musicPayload.audioUrl = `${baseUrl}/api/audio?url=${encodeURIComponent(musicResult.audioUrl)}`;
+    } else if (musicResult.source === 'lyria' && !musicResult.audioUrl) {
+      musicPayload.audioUrl = `${baseUrl}/api/music/generate?mood=${encodeURIComponent(musicResult.mood)}`;
+    }
+    const narrationAudioUrl = `${baseUrl}/api/tts?text=${encodeURIComponent(storyBeat.narration)}`;
 
     // Return everything the frontend needs
     const response = {
       narration: storyBeat.narration,
+      narrationAudioUrl,
       diceRoll: resolvedDice,
       image: imageResult,
-      music: musicResult,
+      music: musicPayload,
       location: storyBeat.location,
       music_mood: storyBeat.music_mood,
       elapsed_ms: elapsed,
-      event_number: campaign.events.length,
+      event_number: eventNumber,
     };
 
     // Also broadcast to WebSocket clients
@@ -113,6 +141,11 @@ router.post('/dice', async (req, res) => {
 
 // ── GET /api/campaign — Get current campaign state ──
 router.get('/campaign', (req, res) => {
+  const campaignId = resolveCampaignId(req);
+  if (campaignId === null) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+  const campaign = getCampaign(campaignId);
   res.json({
     characters: campaign.characters,
     locations: campaign.locations,
@@ -123,14 +156,24 @@ router.get('/campaign', (req, res) => {
 
 // ── POST /api/campaign/reset — Reset campaign ──
 router.post('/campaign/reset', (req, res) => {
-  campaign = {
-    characters: [
-      { name: 'Thorn', role: 'Shadow Ranger', description: 'A hooded figure with silver eyes' },
-    ],
-    locations: ['The Rusty Chalice Tavern'],
-    events: [],
-  };
+  const campaignId = resolveCampaignId(req);
+  if (campaignId === null) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+  resetCampaign(campaignId);
   res.json({ ok: true, message: 'Campaign reset' });
+});
+
+// ── GET /api/campaigns — List all campaigns ──
+router.get('/campaigns', (req, res) => {
+  res.json({ campaigns: listCampaigns() });
+});
+
+// ── POST /api/campaigns — Create a new campaign ──
+router.post('/campaigns', (req, res) => {
+  const name = req.body?.name;
+  const id = createCampaign(name);
+  res.status(201).json({ id, name: name || 'Unnamed campaign' });
 });
 
 // ── GET /api/moods — List available music moods ──
@@ -140,13 +183,14 @@ router.get('/moods', (req, res) => {
 
 // ── GET /api/health — Health check ──
 router.get('/health', (req, res) => {
+  const defaultId = getOrCreateDefaultCampaign();
   res.json({
     status: 'ok',
     service: 'living-worlds',
-    campaign_events: campaign.events.length,
+    campaign_events: getEventCount(defaultId),
     has_gemini: !!process.env.GEMINI_API_KEY,
-    has_nanobanana: !!process.env.NANOBANANA_API_KEY,
-    has_lyria: !!process.env.LYRIA_API_KEY,
+    has_nanobanana: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.NANOBANANA_API_KEY),
+    has_lyria: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.LYRIA_API_KEY),
   });
 });
 

@@ -1,13 +1,28 @@
 // ═══════════════════════════════════════════════
 // LYRIA — Adaptive Music Engine
-// Generates or selects background music based on mood.
-// Falls back to royalty-free ambient tracks for demo.
+// Supports Google Vertex AI Lyria 2 (text-to-music) when configured.
+// Falls back to royalty-free preset tracks otherwise.
 // ═══════════════════════════════════════════════
 
-const LYRIA_API_KEY = process.env.LYRIA_API_KEY;
+import { GoogleAuth } from 'google-auth-library';
 
-// Pre-mapped royalty-free ambient tracks for instant mood switching
-// These are creative-commons / free-to-use ambient tracks
+const LYRIA_API_KEY = process.env.LYRIA_API_KEY;
+const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT;
+const VERTEX_LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
+
+// Lyria 2 text prompts per mood (US English, instrumental)
+const MOOD_PROMPTS = {
+  tavern: 'Warm medieval tavern ambiance with lute and soft chatter, acoustic folk, gentle strings.',
+  forest: 'Mystical forest atmosphere with birdsong and wind through ancient trees, peaceful ambient.',
+  battle: 'Intense orchestral combat music with drums and brass, epic action, dramatic.',
+  mystery: 'Eerie atmospheric music with subtle tension, suspenseful, dark ambient.',
+  victory: 'Triumphant fanfare with soaring strings and brass, heroic, celebratory.',
+  danger: 'Dark ominous tones with heartbeat-like percussion, threatening, suspense.',
+  calm: 'Peaceful ambient music with gentle harp and soft pads, relaxing.',
+  epic: 'Grand orchestral theme with choir and full orchestra, cinematic, majestic.',
+};
+
+// Pre-mapped royalty-free ambient tracks for instant mood switching (fallback)
 const MOOD_TRACKS = {
   tavern: {
     url: '/audio/tavern.mp3',
@@ -52,15 +67,96 @@ const MOOD_TRACKS = {
 };
 
 /**
- * Get music for a given mood.
+ * Whether Vertex AI Lyria 2 is configured (Google Cloud project set).
+ */
+export function isVertexLyriaConfigured() {
+  return !!GOOGLE_CLOUD_PROJECT;
+}
+
+/**
+ * Generate music with Vertex AI Lyria 2. Returns WAV buffer or null on failure.
  * @param {string} mood - One of: tavern, forest, battle, mystery, victory, danger, calm, epic
- * @returns {object} { audioUrl, mood, description, source }
+ * @returns {Promise<Buffer|null>}
+ */
+export async function generateLyriaAudio(mood) {
+  if (!GOOGLE_CLOUD_PROJECT) {
+    return null;
+  }
+  const normalizedMood = mood.toLowerCase().trim();
+  const prompt = MOOD_PROMPTS[normalizedMood] || MOOD_PROMPTS.calm;
+
+  try {
+    const auth = new GoogleAuth({
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    });
+    const client = await auth.getClient();
+    const token = await client.getAccessToken();
+    if (!token.token) {
+      console.error('[LYRIA] No access token from Google Auth');
+      return null;
+    }
+
+    const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${GOOGLE_CLOUD_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/lyria-002:predict`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token.token}`,
+      },
+      body: JSON.stringify({
+        instances: [{ prompt }],
+        parameters: {},
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('[LYRIA] Vertex predict error:', res.status, errText);
+      return null;
+    }
+
+    const data = await res.json();
+    const predictions = data.predictions;
+    if (!predictions || !predictions.length) {
+      console.error('[LYRIA] No predictions in response');
+      return null;
+    }
+
+    const first = predictions[0];
+    const b64 = first.audioContent ?? first.bytesBase64Encoded ?? first.bytesBase64encoded;
+    if (!b64) {
+      console.error('[LYRIA] No audioContent/bytesBase64Encoded in prediction');
+      return null;
+    }
+
+    return Buffer.from(b64, 'base64');
+  } catch (err) {
+    console.error('[LYRIA] Vertex generation error:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Get music for a given mood.
+ * When Vertex Lyria is configured, returns source 'lyria' and no audioUrl (client uses GET /api/music/generate?mood=...).
+ * Otherwise returns preset track URL.
+ * @param {string} mood - One of: tavern, forest, battle, mystery, victory, danger, calm, epic
+ * @returns {object} { audioUrl?, mood, description, source }
  */
 export async function getMusicForMood(mood) {
   const normalizedMood = mood.toLowerCase().trim();
 
-  // ── LYRIA API CALL ──
-  // Replace with actual Lyria API when available
+  // ── Vertex AI Lyria 2 ──
+  if (isVertexLyriaConfigured()) {
+    return {
+      audioUrl: null,
+      mood: normalizedMood,
+      description: `AI-generated ${normalizedMood} music (Lyria 2)`,
+      source: 'lyria',
+    };
+  }
+
+  // ── Legacy placeholder: LYRIA_API_KEY (fictional api.lyria.ai) ──
   if (LYRIA_API_KEY && LYRIA_API_KEY !== 'your_lyria_api_key_here') {
     try {
       const res = await fetch('https://api.lyria.ai/v1/generate', {
@@ -76,7 +172,6 @@ export async function getMusicForMood(mood) {
           loop: true,
         }),
       });
-
       const data = await res.json();
       if (data.audio_url) {
         return {
