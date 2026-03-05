@@ -4,9 +4,10 @@
 // ═══════════════════════════════════════════════
 
 import { Router } from 'express';
-import { generateLyriaAudio } from '../ai/lyria.js';
+import { generateLyriaAudio, getPresetFallbackUrl } from '../ai/lyria.js';
 
 const router = Router();
+const REAL_DATA_ONLY = process.env.REAL_DATA_ONLY === '1' || process.env.REAL_DATA_ONLY === 'true';
 
 const TTS_MAX_CHARS = 200;
 
@@ -39,23 +40,60 @@ router.get('/audio', async (req, res) => {
 
 /**
  * GET /api/music/generate?mood=<mood>
- * Generates music with Vertex AI Lyria 2 and streams WAV. Used when Lyria is configured.
+ * Generates music with Vertex AI Lyria 2 and streams WAV. When Lyria fails, streams preset track instead.
  */
 router.get('/music/generate', async (req, res) => {
   const mood = req.query.mood;
   if (!mood || typeof mood !== 'string') {
     return res.status(400).json({ error: 'Missing or invalid mood query parameter' });
   }
+  const normalizedMood = mood.trim();
   try {
-    const wavBuffer = await generateLyriaAudio(mood.trim());
-    if (!wavBuffer || wavBuffer.length === 0) {
-      return res.status(502).json({ error: 'Lyria generation failed or Vertex AI not configured' });
+    let wavBuffer = await generateLyriaAudio(normalizedMood);
+    if (wavBuffer && wavBuffer.length > 0) {
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(wavBuffer);
     }
-    res.setHeader('Content-Type', 'audio/wav');
+    if (REAL_DATA_ONLY) {
+      return res.status(502).json({ error: 'REAL_DATA_ONLY: Lyria (Vertex AI) required for music. Set GOOGLE_CLOUD_PROJECT and run gcloud auth application-default login.' });
+    }
+    // Lyria failed or not configured — stream preset so client always gets audio
+    const presetUrl = getPresetFallbackUrl(normalizedMood);
+    const response = await fetch(presetUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/119.0' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) {
+      console.error('[MUSIC] Preset fetch failed', response.status, presetUrl);
+      return res.status(502).json({ error: 'Music unavailable' });
+    }
+    const contentType = response.headers.get('content-type') || 'audio/mpeg';
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.send(wavBuffer);
+    const buf = await response.arrayBuffer();
+    res.send(Buffer.from(buf));
   } catch (err) {
     console.error('[MUSIC] Lyria generate error:', err.message);
+    if (REAL_DATA_ONLY) {
+      return res.status(502).json({ error: 'REAL_DATA_ONLY: Lyria (Vertex AI) required for music. Set GOOGLE_CLOUD_PROJECT and run gcloud auth application-default login.' });
+    }
+    const presetUrl = getPresetFallbackUrl(normalizedMood);
+    try {
+      const response = await fetch(presetUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/119.0' },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (response.ok) {
+        const contentType = response.headers.get('content-type') || 'audio/mpeg';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        const buf = await response.arrayBuffer();
+        return res.send(Buffer.from(buf));
+      }
+    } catch (presetErr) {
+      console.error('[MUSIC] Preset fallback failed:', presetErr.message);
+    }
     res.status(502).json({ error: 'Failed to generate music' });
   }
 });

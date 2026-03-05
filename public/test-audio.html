@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Living Worlds — Audio Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; }
+    input, button { font-size: 1rem; padding: 0.5rem; margin: 0.25rem 0; }
+    input { width: 100%; box-sizing: border-box; }
+    button { background: #333; color: #fff; border: none; border-radius: 4px; cursor: pointer; padding: 0.5rem 1rem; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .narration { margin: 1rem 0; padding: 0.75rem; background: #f5f5f5; border-radius: 6px; white-space: pre-wrap; }
+    .status { font-size: 0.875rem; color: #666; margin-top: 0.5rem; }
+    .error { color: #c00; }
+  </style>
+</head>
+<body>
+  <h1>Living Worlds — Audio Test</h1>
+  <p>Enter an action and click <strong>Send &amp; Play</strong>. You should hear the narration first, then background music. (First click enables audio.)</p>
+  <input type="text" id="action" placeholder="e.g. I'm in the forest" value="I'm in the forest" />
+  <button id="btn">Send &amp; Play</button>
+  <div id="status" class="status"></div>
+  <div id="narration" class="narration" style="display:none;"></div>
+
+  <script>
+    const API = window.location.origin;
+    const actionInput = document.getElementById('action');
+    const btn = document.getElementById('btn');
+    const statusEl = document.getElementById('status');
+    const narrationEl = document.getElementById('narration');
+
+    function setStatus(msg, isError) {
+      statusEl.textContent = msg;
+      statusEl.className = 'status' + (isError ? ' error' : '');
+    }
+
+    function playNarrationThenMusic(narrationAudioUrl, musicAudioUrl) {
+      const narrationAudio = new Audio(narrationAudioUrl);
+      const musicAudio = new Audio(musicAudioUrl);
+
+      narrationAudio.onerror = () => setStatus('Narration audio failed to load.', true);
+      musicAudio.onerror = () => setStatus('Music failed to load. URL: ' + musicAudioUrl, true);
+
+      narrationAudio.onended = () => {
+        setStatus('Playing background music…');
+        musicAudio.play().catch(e => setStatus('Music play failed: ' + e.message, true));
+      };
+
+      setStatus('Playing narration…');
+      narrationAudio.play().catch(e => setStatus('Narration play failed: ' + e.message, true));
+    }
+
+    btn.addEventListener('click', async () => {
+      const action = actionInput.value.trim();
+      if (!action) {
+        setStatus('Enter an action.', true);
+        return;
+      }
+      btn.disabled = true;
+      setStatus('Sending action…');
+      narrationEl.style.display = 'none';
+
+      try {
+        const res = await fetch(API + '/api/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          setStatus('Error: ' + (data.error || res.status), true);
+          btn.disabled = false;
+          return;
+        }
+
+        narrationEl.textContent = data.narration;
+        narrationEl.style.display = 'block';
+        setStatus('Got response. Starting audio…');
+
+        if (data.narrationAudioUrl && data.music?.audioUrl) {
+          playNarrationThenMusic(data.narrationAudioUrl, data.music.audioUrl);
+        } else {
+          setStatus('No narration or music URL in response.', true);
+        }
+      } catch (e) {
+        setStatus('Request failed: ' + e.message, true);
+      }
+      btn.disabled = false;
+    });
+  </script>
+</body>
+</html>

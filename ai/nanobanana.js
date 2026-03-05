@@ -13,6 +13,8 @@ const VERTEX_LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
 
 const IMAGEN_MODEL = process.env.IMAGEN_MODEL || 'imagen-3.0-fast-generate-001';
 
+const REAL_DATA_ONLY = process.env.REAL_DATA_ONLY === '1' || process.env.REAL_DATA_ONLY === 'true';
+
 /**
  * Whether Vertex AI Imagen is configured (Google Cloud project set).
  */
@@ -128,6 +130,9 @@ export async function generateSceneImage(scenePrompt) {
   }
 
   // ── PLACEHOLDER FALLBACK ──
+  if (REAL_DATA_ONLY) {
+    throw new Error('REAL_DATA_ONLY: Scene image requires NANOBANANA_API_KEY or GOOGLE_CLOUD_PROJECT (Vertex Imagen). No placeholder allowed.');
+  }
   const imageUrl = generatePlaceholderUrl(scenePrompt);
   return { imageUrl, source: 'placeholder' };
 }

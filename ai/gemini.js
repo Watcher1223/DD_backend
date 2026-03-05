@@ -7,6 +7,8 @@
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
+const REAL_DATA_ONLY = process.env.REAL_DATA_ONLY === '1' || process.env.REAL_DATA_ONLY === 'true';
+
 // System prompt that makes Gemini act as a D&D Dungeon Master
 const SYSTEM_PROMPT = `You are a legendary Dungeon Master narrating a dark fantasy campaign.
 
@@ -69,12 +71,19 @@ export async function generateStoryBeat(playerAction, diceRoll, campaign) {
       if (text) {
         return JSON.parse(text);
       }
+      if (data.error || !res.ok) {
+        console.error('[GEMINI] API error response:', res.status, data.error || data);
+      }
     } catch (err) {
       console.error('[GEMINI] API error, falling back to mock:', err.message);
     }
   }
 
-  // ── MOCK FALLBACK ──
+  // ── MOCK FALLBACK (used when Gemini is not configured or request fails) ──
+  if (REAL_DATA_ONLY) {
+    throw new Error('REAL_DATA_ONLY: Gemini API key required and request must succeed. Set GEMINI_API_KEY in .env and ensure the API returns valid JSON.');
+  }
+  console.log('[GEMINI] Using mock response (no API key, or API error)');
   return generateMockBeat(playerAction, diceRoll);
 }
 
@@ -160,6 +169,19 @@ function generateMockBeat(playerAction, diceRoll) {
       fail: {
         narration: 'You search every crack and crevice but find nothing except dust and old cobwebs. Then you hear it — a low, wet breathing from somewhere in the darkness behind you. You are not alone.',
         scene_prompt: 'Fantasy illustration of an adventurer searching a dark chamber with a torch, ominous shadows gathering behind them, something watching from darkness, oil painting style, dark fantasy',
+        music_mood: 'danger',
+      },
+    },
+    {
+      keywords: ['forest', 'woods', 'trees', 'walk', 'travel', 'path'],
+      success: {
+        narration: 'The forest closes around you, ancient and watchful. Sunlight filters through the canopy in shafts of gold. Somewhere ahead, a stream murmurs over stones — and perhaps something else moves just out of sight.',
+        scene_prompt: 'Fantasy illustration of a lone figure on a path in a dense mystical forest, dappled sunlight, stream in distance, oil painting style, dark fantasy',
+        music_mood: 'forest',
+      },
+      fail: {
+        narration: 'The path gives way to tangled undergrowth. Branches snag your cloak as shadows deepen. You pause, unsure which way you came — and from the thicket comes the snap of a twig.',
+        scene_prompt: 'Fantasy illustration of a lost traveler in a dark overgrown forest, twisted branches, foreboding shadows, oil painting style, dark fantasy',
         music_mood: 'danger',
       },
     },

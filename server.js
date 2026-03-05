@@ -22,6 +22,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // Large limit for webcam frames
 
+// Static files (test page)
+app.use(express.static('public'));
+
 // ── WebSocket setup ──
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
@@ -56,6 +59,7 @@ app.get('/', (req, res) => {
   res.json({
     name: 'Living Worlds — AI Dungeon Master',
     version: '1.0.0',
+    testAudio: 'GET /test-audio.html to verify narration + music playback',
     endpoints: {
       action: 'POST /api/action',
       dice: 'POST /api/dice',
@@ -83,5 +87,8 @@ server.listen(PORT, () => {
   console.log(`  Gemini:    ${process.env.GEMINI_API_KEY ? 'configured' : 'MOCK MODE'}`);
   console.log(`  NanoBanana:${process.env.NANOBANANA_API_KEY ? 'NanoBanana 2 (hackathon)' : process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT ? 'Imagen (Vertex)' : ' MOCK MODE (pollinations.ai)'}`);
   console.log(`  Lyria:     ${process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT ? 'Vertex Lyria 2' : process.env.LYRIA_API_KEY ? 'configured' : 'MOCK MODE (preset tracks)'}`);
+  if (process.env.REAL_DATA_ONLY === '1' || process.env.REAL_DATA_ONLY === 'true') {
+    console.log('  REAL_DATA_ONLY: enabled (no mocks/placeholders)');
+  }
   console.log('');
 });

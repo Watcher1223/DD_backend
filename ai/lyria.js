@@ -202,3 +202,14 @@ export async function getMusicForMood(mood) {
 export function getAvailableMoods() {
   return Object.keys(MOOD_TRACKS);
 }
+
+/**
+ * Get the preset fallback URL for a mood (for use when Lyria fails).
+ * @param {string} mood
+ * @returns {string}
+ */
+export function getPresetFallbackUrl(mood) {
+  const normalizedMood = (mood || '').toLowerCase().trim();
+  const track = MOOD_TRACKS[normalizedMood] || MOOD_TRACKS.calm;
+  return track.fallbackUrl;
+}
