@@ -8,16 +8,16 @@ import { GoogleAuth } from 'google-auth-library';
 const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT;
 const VERTEX_LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
 
-// Lyria 2 text prompts: abstract, instrumental, to reduce recitation blocks
+// Lyria 2: minimal prompts to avoid recitation blocks (no genre terms, no famous-style phrases)
 const MOOD_PROMPTS = {
-  tavern: 'Short instrumental piece. Cozy room tone, soft plucked strings, quiet and warm. No lyrics.',
-  forest: 'Short instrumental piece. Open space, soft high tones, gentle low drone. Peaceful. No lyrics.',
-  battle: 'Short instrumental piece. Driving rhythm, low brass and drums, building intensity. No lyrics.',
-  mystery: 'Short instrumental piece. Sparse notes, long reverb, minor key. Unsettling but not loud. No lyrics.',
-  victory: 'Short instrumental piece. Bright major key, rising melody, full but short. No lyrics.',
-  danger: 'Short instrumental piece. Low sustained notes, slow pulse, tension. No lyrics.',
-  calm: 'Short instrumental piece. Slow tempo, simple melody, soft pads. Relaxing. No lyrics.',
-  epic: 'Short instrumental piece. Large ensemble, broad strokes, cinematic feel. No lyrics.',
+  tavern: 'Instrumental only. Soft, warm, quiet. No lyrics or vocals.',
+  forest: 'Instrumental only. Open, soft, peaceful. No lyrics or vocals.',
+  battle: 'Instrumental only. Rhythmic, intense, short. No lyrics or vocals.',
+  mystery: 'Instrumental only. Sparse, quiet, minor. No lyrics or vocals.',
+  victory: 'Instrumental only. Bright, short, uplifting. No lyrics or vocals.',
+  danger: 'Instrumental only. Low notes, slow, tense. No lyrics or vocals.',
+  calm: 'Instrumental only. Slow, soft, simple. No lyrics or vocals.',
+  epic: 'Instrumental only. Broad, short, neutral. No lyrics or vocals.',
 };
 
 /**
@@ -37,7 +37,10 @@ export async function generateLyriaAudio(mood) {
     return null;
   }
   const normalizedMood = mood.toLowerCase().trim();
-  const prompt = MOOD_PROMPTS[normalizedMood] || MOOD_PROMPTS.calm;
+  const prompt =
+    process.env.LYRIA_PROMPT_OVERRIDE ||
+    MOOD_PROMPTS[normalizedMood] ||
+    MOOD_PROMPTS.calm;
 
   try {
     const auth = new GoogleAuth({

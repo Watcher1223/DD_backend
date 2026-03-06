@@ -114,14 +114,14 @@ function parseGeminiJson(raw) {
 
 /**
  * If the model output was truncated (e.g. mid-string), close the string and add missing keys.
+ * When we don't end with `}`, we assume we're truncated; if the text doesn't end with `"`, close the open string first.
  */
 function repairTruncatedJson(text) {
   const trimmed = text.trim();
   if (!trimmed.startsWith('{')) return null;
   let out = trimmed;
   if (!out.endsWith('}')) {
-    const inString = (out.match(/"/g) || []).length % 2 === 1;
-    if (inString) out += '"';
+    if (!out.trimEnd().endsWith('"')) out += '"';
     const defaults = ', "scene_prompt": "fantasy illustration, dramatic lighting, oil painting style", "music_mood": "calm", "characters_mentioned": [], "location": "Unknown"';
     out += (out.trimEnd().endsWith(',') ? '' : defaults) + '}';
   }
