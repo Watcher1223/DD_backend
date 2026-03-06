@@ -1,8 +1,8 @@
 // ═══════════════════════════════════════════════
-// SCENE IMAGE — NanoBanana 2 (hackathon) → Google Imagen fallback → placeholder
+// SCENE IMAGE — NanoBanana 2 or Google Vertex Imagen (no placeholder)
 // 1. NanoBanana when NANOBANANA_API_KEY is set.
-// 2. Google Vertex Imagen (same GOOGLE_CLOUD_PROJECT / auth as Lyria) when NanoBanana fails or no key.
-// 3. pollinations.ai placeholder when neither is available.
+// 2. Google Vertex Imagen when GOOGLE_CLOUD_PROJECT is set.
+// No mock/placeholder; both can fail and we throw.
 // ═══════════════════════════════════════════════
 
 import { GoogleAuth } from 'google-auth-library';
@@ -12,8 +12,6 @@ const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || process.env.VER
 const VERTEX_LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
 
 const IMAGEN_MODEL = process.env.IMAGEN_MODEL || 'imagen-3.0-fast-generate-001';
-
-const REAL_DATA_ONLY = process.env.REAL_DATA_ONLY === '1' || process.env.REAL_DATA_ONLY === 'true';
 
 /**
  * Whether Vertex AI Imagen is configured (Google Cloud project set).
@@ -123,24 +121,11 @@ export async function generateSceneImage(scenePrompt) {
     }
   }
 
-  // ── Vertex AI Imagen (Google Cloud fallback; same project/auth as Lyria) ──
+  // ── Vertex AI Imagen (Google Cloud; same project/auth as Lyria) ──
   const imagenResult = await generateWithImagen(scenePrompt);
   if (imagenResult) {
     return imagenResult;
   }
 
-  // ── PLACEHOLDER FALLBACK ──
-  if (REAL_DATA_ONLY) {
-    throw new Error('REAL_DATA_ONLY: Scene image requires NANOBANANA_API_KEY or GOOGLE_CLOUD_PROJECT (Vertex Imagen). No placeholder allowed.');
-  }
-  const imageUrl = generatePlaceholderUrl(scenePrompt);
-  return { imageUrl, source: 'placeholder' };
-}
-
-/**
- * Generate a themed placeholder image URL (pollinations.ai, no key).
- */
-function generatePlaceholderUrl(prompt) {
-  const encoded = encodeURIComponent(prompt + ', high quality, 4k, detailed');
-  return `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=576&nologo=true`;
+  throw new Error('Scene image failed. Requires NANOBANANA_API_KEY or GOOGLE_CLOUD_PROJECT (Vertex Imagen) with billing enabled.');
 }

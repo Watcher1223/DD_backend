@@ -84,11 +84,8 @@ server.listen(PORT, () => {
   console.log(`  HTTP:      http://localhost:${PORT}`);
   console.log(`  WebSocket: ws://localhost:${PORT}`);
   console.log('  Database:  connected');
-  console.log(`  Gemini:    ${process.env.GEMINI_API_KEY ? 'configured' : 'MOCK MODE'}`);
-  console.log(`  NanoBanana:${process.env.NANOBANANA_API_KEY ? 'NanoBanana 2 (hackathon)' : process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT ? 'Imagen (Vertex)' : ' MOCK MODE (pollinations.ai)'}`);
-  console.log(`  Lyria:     ${process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT ? 'Vertex Lyria 2' : process.env.LYRIA_API_KEY ? 'configured' : 'MOCK MODE (preset tracks)'}`);
-  if (process.env.REAL_DATA_ONLY === '1' || process.env.REAL_DATA_ONLY === 'true') {
-    console.log('  REAL_DATA_ONLY: enabled (no mocks/placeholders)');
-  }
+  console.log(`  Gemini:    ${process.env.GEMINI_API_KEY ? 'configured' : 'required (set GEMINI_API_KEY)'}`);
+  console.log(`  NanoBanana:${process.env.NANOBANANA_API_KEY ? 'NanoBanana 2' : process.env.GOOGLE_CLOUD_PROJECT ? 'Imagen (Vertex)' : 'required (NANOBANANA_API_KEY or GOOGLE_CLOUD_PROJECT)'}`);
+  console.log(`  Lyria:     ${process.env.GOOGLE_CLOUD_PROJECT ? 'Vertex Lyria 2' : 'required (GOOGLE_CLOUD_PROJECT)'}`);
   console.log('');
 });

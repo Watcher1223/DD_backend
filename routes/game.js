@@ -121,7 +121,7 @@ router.post('/action', async (req, res) => {
 
   } catch (err) {
     console.error('[GAME] Pipeline error:', err);
-    const status = err.message && err.message.includes('REAL_DATA_ONLY') ? 503 : 500;
+    const status = err.message && (err.message.includes('required') || err.message.includes('failed')) ? 503 : 500;
     res.status(status).json({ error: 'Story generation failed', details: err.message });
   }
 });

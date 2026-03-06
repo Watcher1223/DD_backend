@@ -35,15 +35,15 @@ Before or after loading the app, call the health endpoint to know what’s live 
 |-------|------|--------|
 | `status` | string | Always `"ok"` when the server is up. |
 | `campaign_events` | number | Event count for the default campaign (persisted in DB). |
-| `has_gemini` | boolean | `true` = real AI narration (Gemini). `false` = mock story text. |
-| `has_nanobanana` | boolean | `true` = NanoBanana 2 or Vertex Imagen available for images. `false` = placeholder images only. |
-| `has_lyria` | boolean | `true` = Lyria 2 or preset music available. `false` = no music. |
+| `has_gemini` | boolean | `true` = Gemini configured for story. `false` = action will return 503 until GEMINI_API_KEY is set. |
+| `has_nanobanana` | boolean | `true` = NanoBanana or Vertex Imagen available for images. `false` = action will fail for image until configured. |
+| `has_lyria` | boolean | `true` = Vertex Lyria 2 available for music. `false` = music will return 502 until GOOGLE_CLOUD_PROJECT + billing. |
 
 **Frontend recommendations:**
 
-- If `has_gemini` is false, show a short “Demo mode” or “Connect API for full experience” message.
-- If `has_nanobanana` is false, treat images as placeholders (e.g. optional or “scene preview”).
-- If `has_lyria` is false, hide or disable music controls.
+- If `has_gemini` is false, actions will return 503; show “Configure Gemini API” or disable the action button.
+- If `has_nanobanana` is false, scene image may fail (503) until NanoBanana or Imagen is configured.
+- If `has_lyria` is false, music URLs will return 502; hide or disable music or show “Music unavailable”.
 - Use `campaign_events` to show “Session has N events” or to decide whether to offer “Continue” vs “New game”.
 
 ---
@@ -92,11 +92,11 @@ Main game endpoint: send the player’s action and get narration, scene image, a
 | `narration` | string | Story text (from Gemini when `has_gemini` is true). |
 | `narrationAudioUrl` | string | Same-origin URL to **play narration as speech**. Use in `<audio src="...">` or fetch and play. |
 | `diceRoll` | number \| null | Resolved d20 roll, or null. |
-| `image.imageUrl` | string | URL for the scene image. May be external (NanoBanana), data URL (Imagen), or placeholder (pollinations). |
-| `image.source` | string | `"nanobanana"` \| `"imagen"` \| `"placeholder"`. Use to show “AI image” vs “Preview” in UI. |
+| `image.imageUrl` | string | URL for the scene image. External (NanoBanana) or data URL (Imagen). |
+| `image.source` | string | `"nanobanana"` \| `"imagen"`. |
 | `music.audioUrl` | string | Same-origin URL for **background music**. Always use this URL (backend proxies Lyria/presets). |
 | `music.mood` | string | Mood key (e.g. `battle`, `calm`, `danger`). |
-| `music.source` | string | `"lyria"` \| `"preset"`. |
+| `music.source` | string | `"lyria"`. |
 | `location` | string | Current location name. |
 | `music_mood` | string | Same as `music.mood`. |
 | `elapsed_ms` | number | Server-side latency in ms. |
@@ -107,18 +107,18 @@ Main game endpoint: send the player’s action and get narration, scene image, a
 - `400` — `action` missing: `{ "error": "action is required" }`
 - `404` — Invalid or missing campaign: `{ "error": "Campaign not found" }`
 - `500` — Pipeline failure: `{ "error": "Story generation failed", "details": "..." }`
-- `503` — **Real-data-only mode:** story or image required real API (Gemini/NanoBanana/Imagen) but it was missing or failed. Response `details` starts with `REAL_DATA_ONLY:` and explains what to configure.
-- `502` — **Music (real-data-only):** when `REAL_DATA_ONLY=1`, `/api/music/generate` returns 502 if Lyria fails; body has `{ "error": "REAL_DATA_ONLY: ..." }`. Frontend can show “Music unavailable” or retry later.
+- `503` — Story, image, or music requires a real API (Gemini, NanoBanana/Imagen, or Lyria) but it was missing or failed. Response `details` explains what to configure.
+- `502` — **Music:** `/api/music/generate` returns 502 if Lyria fails; body has `{ "error": "..." }`. Frontend can show “Music unavailable” or retry later.
 
 **Frontend recommendations for real data:**
 
 1. **Narration:** Display `narration` and, if you want voice, play `narrationAudioUrl` in an `<audio>` (or play narration first, then fade in music).
-2. **Scene image:** Use `image.imageUrl` in `<img src={image.imageUrl} />`. If `image.source === "placeholder"`, you can show a “Preview” or “Placeholder” label.
+2. **Scene image:** Use `image.imageUrl` in `<img src={image.imageUrl} />`.
 3. **Music:** Set background music to `music.audioUrl` (same-origin; no CORS). When a new action returns, optionally crossfade or replace the track. Lyria can take 10–20s to generate the first time; show loading or keep previous track until the new one is ready.
 4. **Loading:** `elapsed_ms` is often 2–5+ seconds (Gemini + image + music). Show a clear loading state (e.g. “The DM is thinking…” or a spinner) until the response is received.
 5. **Persistence:** After each action, the campaign is saved. On reload, use `GET /api/campaign` to restore state.
 
-**If you always see the same narration** (e.g. “The fates are cruel today…”): the backend is using the **mock** story fallback (Gemini not configured or API error). Check the server terminal for `[GEMINI] Using mock response` and ensure `GEMINI_API_KEY` is set in `.env` and valid.
+**No mocks:** Story, images, and music all require real APIs (Gemini, NanoBanana or Imagen, Lyria). If any are missing or fail, the backend returns 503/502 with an error message in `details`; fix the config and retry.
 
 ---
 
@@ -252,11 +252,10 @@ All audio URLs from the backend are **same-origin** (or data URLs), so playback 
 
 | `image.source` | Meaning |
 |----------------|--------|
-| `nanobanana` | NanoBanana 2 (hackathon). High-quality, character-consistent. |
-| `imagen` | Vertex AI Imagen (Google). Fallback when NanoBanana is not configured or fails. |
-| `placeholder` | pollinations.ai placeholder. Shown when neither NanoBanana nor Imagen is available. |
+| `nanobanana` | NanoBanana 2 (hackathon). |
+| `imagen` | Vertex AI Imagen (Google Cloud). |
 
-`image.imageUrl` is always set: either an external URL, a `data:image/...;base64,...` URL (Imagen), or a placeholder URL. Use it directly in `<img src={image.imageUrl} />`. No proxy needed for display; if the frontend is on a different origin, ensure images are not blocked by mixed content (use HTTPS for the app when images are HTTPS).
+`image.imageUrl` is always set: either an external URL or a `data:image/...;base64,...` URL (Imagen). Use it directly in `<img src={image.imageUrl} />`.
 
 ---
 
@@ -318,7 +317,7 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 - [ ] Call `GET /api/health` on load and use `has_gemini`, `has_nanobanana`, `has_lyria` to adapt UI (labels, disabled features, or “demo mode”).
 - [ ] Show loading state for `POST /api/action` (2–5+ seconds typical).
 - [ ] Display `narration` and play `narrationAudioUrl` for voice when desired.
-- [ ] Use `image.imageUrl` for the scene image; optionally show “AI” vs “Placeholder” based on `image.source`.
+- [ ] Use `image.imageUrl` for the scene image.
 - [ ] Use `music.audioUrl` for background music (same-origin); handle Lyria’s first-load delay (e.g. keep previous track or show “Loading music…”).
 - [ ] On load, call `GET /api/campaign` to show event count, recent events, locations, and characters (persisted).
 - [ ] Support optional `campaignId` in action and campaign endpoints if you add multi-campaign UI.
