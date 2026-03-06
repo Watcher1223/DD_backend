@@ -19,7 +19,7 @@ RULES:
 - Create dramatic tension and memorable moments
 - Never break character
 
-You must respond with ONLY valid JSON in this exact format:
+You must respond with ONLY valid JSON in this exact format (no markdown, no code fences; escape any quotes inside strings with \\ and no newlines inside string values):
 {
   "narration": "Your 2-3 sentence narration here",
   "scene_prompt": "A detailed visual description for an image generator: fantasy illustration of [scene], dramatic lighting, cinematic composition, oil painting style",
@@ -70,16 +70,42 @@ export async function generateStoryBeat(playerAction, diceRoll, campaign) {
       const data = await res.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (text) {
-        return JSON.parse(text);
+        const parsed = parseGeminiJson(text);
+        if (parsed) return parsed;
       }
       const errMsg = data.error?.message || data.message || res.statusText || 'Unknown error';
       console.error('[GEMINI] API error:', res.status, errMsg);
       throw new Error(`Gemini API failed: ${errMsg}`);
     } catch (err) {
-      if (err.message && err.message.startsWith('Gemini API')) throw err;
+      if (err.message && (err.message.startsWith('Gemini API') || err.message.includes('invalid JSON'))) throw err;
       console.error('[GEMINI] Request error:', err.message);
       throw new Error(`Gemini request failed: ${err.message}`);
     }
+}
+
+/**
+ * Parse Gemini's JSON response. Handles markdown code fences, trailing text, and minor truncation.
+ */
+function parseGeminiJson(raw) {
+  let text = (raw || '').trim();
+  const codeBlock = /^```(?:json)?\s*([\s\S]*?)```\s*$/;
+  const m = text.match(codeBlock);
+  if (m) text = m[1].trim();
+  const firstBrace = text.indexOf('{');
+  if (firstBrace !== -1) {
+    text = text.slice(firstBrace);
+    const lastBrace = text.lastIndexOf('}');
+    if (lastBrace !== -1) text = text.slice(0, lastBrace + 1);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      console.error('[GEMINI] Invalid JSON from model (first 300 chars):', text.slice(0, 300));
+      throw new Error('Gemini returned invalid JSON. Try again or rephrase your action.');
+    }
+    throw e;
+  }
 }
 
 function buildHistoryContext(campaign) {
