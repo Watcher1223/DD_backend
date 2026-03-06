@@ -61,7 +61,7 @@ export async function generateStoryBeat(playerAction, diceRoll, campaign) {
           contents: [{ parts: [{ text: userPrompt }] }],
           generationConfig: {
             temperature: 0.9,
-            maxOutputTokens: 500,
+            maxOutputTokens: 1024,
             responseMimeType: 'application/json',
           },
         }),
@@ -84,7 +84,7 @@ export async function generateStoryBeat(playerAction, diceRoll, campaign) {
 }
 
 /**
- * Parse Gemini's JSON response. Handles markdown code fences, trailing text, and minor truncation.
+ * Parse Gemini's JSON response. Handles markdown code fences, trailing text, and truncated output.
  */
 function parseGeminiJson(raw) {
   let text = (raw || '').trim();
@@ -100,12 +100,32 @@ function parseGeminiJson(raw) {
   try {
     return JSON.parse(text);
   } catch (e) {
-    if (e instanceof SyntaxError) {
-      console.error('[GEMINI] Invalid JSON from model (first 300 chars):', text.slice(0, 300));
-      throw new Error('Gemini returned invalid JSON. Try again or rephrase your action.');
+    if (!(e instanceof SyntaxError)) throw e;
+    const repaired = repairTruncatedJson(text);
+    if (repaired) {
+      try {
+        return JSON.parse(repaired);
+      } catch (_) {}
     }
-    throw e;
+    console.error('[GEMINI] Invalid JSON from model (first 300 chars):', text.slice(0, 300));
+    throw new Error('Gemini returned invalid JSON. Try again or rephrase your action.');
   }
+}
+
+/**
+ * If the model output was truncated (e.g. mid-string), close the string and add missing keys.
+ */
+function repairTruncatedJson(text) {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{')) return null;
+  let out = trimmed;
+  if (!out.endsWith('}')) {
+    const inString = (out.match(/"/g) || []).length % 2 === 1;
+    if (inString) out += '"';
+    const defaults = ', "scene_prompt": "fantasy illustration, dramatic lighting, oil painting style", "music_mood": "calm", "characters_mentioned": [], "location": "Unknown"';
+    out += (out.trimEnd().endsWith(',') ? '' : defaults) + '}';
+  }
+  return out;
 }
 
 function buildHistoryContext(campaign) {

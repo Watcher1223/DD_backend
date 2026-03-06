@@ -8,16 +8,16 @@ import { GoogleAuth } from 'google-auth-library';
 const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT;
 const VERTEX_LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
 
-// Lyria 2 text prompts per mood (US English, instrumental)
+// Lyria 2 text prompts: abstract, instrumental, to reduce recitation blocks
 const MOOD_PROMPTS = {
-  tavern: 'Warm medieval tavern ambiance with lute and soft chatter, acoustic folk, gentle strings.',
-  forest: 'Mystical forest atmosphere with birdsong and wind through ancient trees, peaceful ambient.',
-  battle: 'Intense orchestral combat music with drums and brass, epic action, dramatic.',
-  mystery: 'Eerie atmospheric music with subtle tension, suspenseful, dark ambient.',
-  victory: 'Triumphant fanfare with soaring strings and brass, heroic, celebratory.',
-  danger: 'Dark ominous tones with heartbeat-like percussion, threatening, suspense.',
-  calm: 'Peaceful ambient music with gentle harp and soft pads, relaxing.',
-  epic: 'Grand orchestral theme with choir and full orchestra, cinematic, majestic.',
+  tavern: 'Short instrumental piece. Cozy room tone, soft plucked strings, quiet and warm. No lyrics.',
+  forest: 'Short instrumental piece. Open space, soft high tones, gentle low drone. Peaceful. No lyrics.',
+  battle: 'Short instrumental piece. Driving rhythm, low brass and drums, building intensity. No lyrics.',
+  mystery: 'Short instrumental piece. Sparse notes, long reverb, minor key. Unsettling but not loud. No lyrics.',
+  victory: 'Short instrumental piece. Bright major key, rising melody, full but short. No lyrics.',
+  danger: 'Short instrumental piece. Low sustained notes, slow pulse, tension. No lyrics.',
+  calm: 'Short instrumental piece. Slow tempo, simple melody, soft pads. Relaxing. No lyrics.',
+  epic: 'Short instrumental piece. Large ensemble, broad strokes, cinematic feel. No lyrics.',
 };
 
 /**
