@@ -7,7 +7,8 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test:story": "node scripts/test-story-backend.js",
-    "test:gemini": "node scripts/run-gemini-tests.js"
+    "test:gemini": "node scripts/run-gemini-tests.js",
+    "test:flow": "node scripts/test-flow.js"
   },
   "dependencies": {
     "@chroma-core/default-embed": "^0.1.9",

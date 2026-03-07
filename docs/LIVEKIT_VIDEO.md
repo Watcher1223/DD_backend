@@ -94,3 +94,31 @@ Getting raw frames from a LiveKit track in Node may require a native addon or a 
 ## Chroma: identity consistency and re-identification
 
 Chroma is used as identity memory so the same person keeps the same character skin when they leave and re-enter the frame (e.g. judge returns and still appears as the Wizard). The backend stores stage identities in `lw_stage_identity` when a new entrant is first seen; when someone re-enters, it queries Chroma by description and reuses the stored beat if distance is below `CHROMA_REID_DISTANCE_THRESHOLD` (default 0.5). Re-identification test: enroll, leave frame 5s, return — pass if same character beat is reused.
+
+## Testing the flow
+
+**Automated (backend only)**  
+With the server running (`npm run dev`), in another terminal run:
+
+```bash
+npm run test:flow
+```
+
+This script starts a story session, optionally exercises the LiveKit token API (if configured), sends a fixture image to `POST /api/story/stage-vision`, asserts response shape and WebSocket `character_injection` when a new entrant is detected, sends a second frame to exercise Chroma re-id, then stops the session. Requires `GEMINI_API_KEY` and a fixture image (`FIXTURE_IMAGE_BASE64` or `scripts/fixtures/sample.png`). Chroma and LiveKit are optional (steps are skipped if not configured).
+
+**Manual E2E (full LiveKit + camera)**  
+1. Start the server and open a client that connects to the app WebSocket.  
+2. Subscribe to `story_audio`, then `POST /api/story/start`.  
+3. `POST /api/livekit/token` with `{ role: "publisher" }`; join the room with the LiveKit JS SDK and publish a camera track (name `camera`).  
+4. Call `POST /api/livekit/ingest-started` with `{ roomName }`; confirm the client receives `livekit_ingest_active` and `livekit_egress_active`.  
+5. Capture frames from the published track (e.g. every 500 ms via canvas) and send them to `POST /api/livekit/vision-frame` with `{ frame: "<base64>" }`.  
+6. Confirm the client receives `stage_vision_tick`, and on new entrant `character_injection` and `v2v_prompt_updated`.
+
+**Camera → character in the test page**  
+To see your camera image turned into a story character in real time (without LiveKit):
+
+1. Open `http://localhost:4300/test-story-audio.html`.
+2. Start a story session (e.g. enter a theme and click “Start story session”).
+3. Check **“Run stage vision from camera (show me as character)”**. The page will request camera access and send a frame to `POST /api/story/stage-vision` every 5 seconds with `generateImage: true`.
+4. When you first appear in frame (people_count 0 → 1), the backend detects a new entrant, generates a character-injection beat (narration + scene_prompt), and optionally a character card image. The page shows **People: 1 — New character!**, the narration text, and the generated image. You can also receive the same via WebSocket `character_injection`.
+5. If a second person steps into view, they are detected as another new entrant and get their own character beat and card (or reuse from Chroma if they were seen before).

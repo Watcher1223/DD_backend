@@ -108,6 +108,9 @@ A full working example (including queueing and planar option) is in **`public/te
 - **Theme** comes from the **user’s description** (voice or text), not from the camera. Send it when starting: **`POST /api/story/start`** with body `{ "themeDescription": "bedtime story in the forest" }`, or later with **`POST /api/story/set-theme`** with `{ "themeDescription": "under the sea" }`. The server uses Gemini to map the phrase to a theme key (e.g. “magical forest”, “under the sea”) and uses it for Lyria.
 - **Emotion/mood/intensity** can be driven by the camera via **`POST /api/story/emotion-from-camera`** (or by presets). When both are used, theme = user description, emotion/mood/intensity = from camera.
 
+**Alternative: Overshoot (or any vision) → music without hardcoding**  
+If you use **Overshoot** (or another real-time vision API) in the frontend to detect laughs, yawns, etc., send the **raw text result** to **`POST /api/story/vision-event`** with body `{ text: "<result>" }`. The backend maps that text to `emotion`, `mood`, `intensity`, and `detected_events` (e.g. "laugh" → upbeat, "yawn" → lullaby) and updates Lyria when a story session is active. Use a **single generic prompt** in Overshoot, e.g. *"In one word or short phrase, what is the person doing or feeling? Examples: laughing, yawning, scared, happy, sleepy, neutral, excited, sad."* No need to hardcode mood logic in the frontend — the backend owns the mapping.
+
 While the session is active, you can also send **`POST /api/music/update`** with body (all optional):
 
 - `theme` — e.g. `"under the sea"`, `"fairy tale"`
@@ -124,6 +127,7 @@ Updates are throttled (theme/mood change or intensity delta &gt; 0.15). Response
 - **`GET /api/story/debug`** — `{ "lyriaChunksReceived": N, "sessionActive": true }` (for debugging no-audio).
 - **`POST /api/story/beat`** — Body `{ action: "string" }`. Gemini generates a story beat and optional music update; returns `narration`, `theme`, `mood`, `emotion`, etc.
 - **`POST /api/story/emotion-from-camera`** — Send a webcam frame (base64); **Gemini Vision** infers emotion/mood/intensity (theme comes from the user’s description set at start or via set-theme). If `updateMusic: true` and a story session is active, the backend updates Lyria using the session’s theme + camera emotion. Body: `{ frame: "<base64>", updateMusic?: boolean }`. Response: `{ emotion, mood, theme, intensity, musicUpdated }`.
+- **`POST /api/story/vision-event`** — Send a **free-text vision result** (e.g. from Overshoot) to drive music without hardcoding. Body: `{ text: "laugh" }` (or "yawn", "scared", "happy", "sleepy", "neutral", etc.). Backend maps text to emotion/mood/detected_events and updates Lyria when a story session is active. Response: `{ emotion, mood, theme, intensity, detected_events, musicUpdated }`.
 
 ### Batch music (one-shot WAV)
 
@@ -144,7 +148,7 @@ Updates are throttled (theme/mood change or intensity delta &gt; 0.15). Response
 - [ ] Call **`GET /api/health`** on load; use `has_gemini`, `has_lyria`, etc. to enable/disable features or show “Configure API”.
 - [ ] **Core game:** Show loading for **`POST /api/action`**; display `narration`, `image.imageUrl`; play `narrationAudioUrl` and `music.audioUrl` inside a user gesture.
 - [ ] **Bedtime story:** Connect WebSocket → send **subscribe** → wait ~500 ms → **`POST /api/story/start`**. Decode `audio_chunk.payload` (base64 → Int16, 48 kHz stereo) and play with Web Audio API. Optionally call **`POST /api/music/update`** when theme/mood changes.
-- [ ] **Emotion-driven music:** When a story session is active, periodically capture a webcam frame (e.g. every 3–4 s), POST to **`POST /api/story/emotion-from-camera`** with `{ frame: "<base64>", updateMusic: true }` so Gemini Vision infers emotion and the backend updates Lyria to match.
+- [ ] **Emotion-driven music:** When a story session is active, periodically capture a webcam frame (e.g. every 3–4 s), POST to **`POST /api/story/emotion-from-camera`** with `{ frame: "<base64>", updateMusic: true }` so Gemini Vision infers emotion and the backend updates Lyria to match. Alternatively, use **Overshoot** (or any vision API) with a generic mood prompt and send the result to **`POST /api/story/vision-event`** with `{ text: result.result }` — no hardcoding of moods in the frontend.
 - [ ] On load, call **`GET /api/campaign`** (and optionally **`GET /api/camera/profiles`**) to restore state.
 - [ ] Handle 400/404/500/502/503 by reading the JSON body and showing `error` or `details` to the user.
 
@@ -162,6 +166,7 @@ Updates are throttled (theme/mood change or intensity delta &gt; 0.15). Response
 | Update story music      | `POST /api/music/update` (theme, mood, intensity, emotion) |
 | Stop story session      | `POST /api/story/stop` |
 | Emotion from camera → music | `POST /api/story/emotion-from-camera` (frame + updateMusic) |
+| Vision text → music (Overshoot, etc.) | `POST /api/story/vision-event` (body: `{ text }`) |
 | One-shot music (WAV)    | `GET /api/music/generate?mood=...` |
 | Test story + audio      | Open `/test-story-audio.html` |
 

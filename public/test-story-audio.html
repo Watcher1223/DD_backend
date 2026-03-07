@@ -68,6 +68,24 @@
     </div>
   </section>
 
+  <section>
+    <h2>Camera → character (stage vision)</h2>
+    <p class="sub">Send camera frames to stage vision. When you (or someone new) appear, the backend generates a story character and optional character card image.</p>
+    <div class="row">
+      <label><input type="checkbox" id="useStageVision" /> Run stage vision from camera (show me as character)</label>
+    </div>
+    <div id="stageVisionWrap" style="display:none; margin-top:0.5rem;">
+      <div id="stageVisionPreview" style="display:flex; gap:0.5rem; align-items:flex-start; flex-wrap:wrap;">
+        <video id="stageVisionVideo" autoplay playsinline muted style="width:160px; height:120px; background:#111; border-radius:6px;"></video>
+        <div id="stageVisionResult" style="flex:1; min-width:200px; font-size:0.85rem;">
+          <div id="stageVisionCount"></div>
+          <div id="stageVisionNarration" style="margin-top:0.25rem; font-style:italic;"></div>
+          <img id="stageVisionImage" alt="Character card" style="max-width:100%; max-height:200px; margin-top:0.5rem; border-radius:6px; display:none;" />
+        </div>
+      </div>
+    </div>
+  </section>
+
   <div id="status" class="status">Start the session and subscribe to hear audio. Use a browser that supports Web Audio.</div>
   <div style="margin-top:0.5rem;">
     <label><input type="checkbox" id="planarPCM" /> Try planar PCM (if you hear no sound with default)</label>
@@ -104,6 +122,12 @@
     const themeDescriptionEl = document.getElementById('themeDescription');
     const themeStatusEl = document.getElementById('themeStatus');
     const btnSetTheme = document.getElementById('btnSetTheme');
+    const useStageVisionCheckbox = document.getElementById('useStageVision');
+    const stageVisionWrap = document.getElementById('stageVisionWrap');
+    const stageVisionVideo = document.getElementById('stageVisionVideo');
+    const stageVisionCountEl = document.getElementById('stageVisionCount');
+    const stageVisionNarrationEl = document.getElementById('stageVisionNarration');
+    const stageVisionImageEl = document.getElementById('stageVisionImage');
 
     let ws = null;
     let audioContext = null;
@@ -113,6 +137,8 @@
     let nextStartTime = 0;
     let cameraStream = null;
     let emotionIntervalId = null;
+    let stageVisionStream = null;
+    let stageVisionIntervalId = null;
 
     function setStatus(msg, type = '') {
       statusEl.textContent = msg;
@@ -238,6 +264,18 @@
               btnSetTheme.disabled = true;
               themeStatusEl.textContent = '';
               stopCameraEmotionLoop();
+              stopStageVisionLoop();
+            } else if (msg.type === 'character_injection') {
+              if (stageVisionNarrationEl) stageVisionNarrationEl.textContent = msg.narration || '';
+              if (stageVisionImageEl) {
+                if (msg.imageUrl) {
+                  stageVisionImageEl.src = msg.imageUrl;
+                  stageVisionImageEl.style.display = 'block';
+                } else {
+                  stageVisionImageEl.removeAttribute('src');
+                  stageVisionImageEl.style.display = 'none';
+                }
+              }
             }
           } catch (e) {
             console.warn('WS message parse error', e);
@@ -292,6 +330,7 @@
         if (data.userTheme) themeStatusEl.textContent = 'Theme: ' + data.userTheme;
         setStatus('Session started. Waiting for Lyria audio chunks…', 'playing');
         if (useCameraCheckbox.checked) startCameraEmotionLoop();
+        if (useStageVisionCheckbox.checked) startStageVisionLoop();
       } catch (e) {
         setStatus('Request failed: ' + e.message, 'error');
         btnStart.disabled = false;
@@ -314,6 +353,7 @@
 
     btnStop.addEventListener('click', async () => {
       stopCameraEmotionLoop();
+      stopStageVisionLoop();
       try {
         await fetch(API + '/api/story/stop', { method: 'POST' });
         sessionActive = false;
@@ -339,6 +379,72 @@
       }
       cameraWrap.style.display = 'none';
       emotionResultEl.textContent = '';
+    }
+
+    function stopStageVisionLoop() {
+      if (stageVisionIntervalId) {
+        clearInterval(stageVisionIntervalId);
+        stageVisionIntervalId = null;
+      }
+      if (stageVisionStream) {
+        stageVisionStream.getTracks().forEach((t) => t.stop());
+        stageVisionStream = null;
+      }
+      stageVisionWrap.style.display = 'none';
+      if (stageVisionCountEl) stageVisionCountEl.textContent = '';
+      if (stageVisionNarrationEl) stageVisionNarrationEl.textContent = '';
+      if (stageVisionImageEl) {
+        stageVisionImageEl.removeAttribute('src');
+        stageVisionImageEl.style.display = 'none';
+      }
+    }
+
+    async function startStageVisionLoop() {
+      stopStageVisionLoop();
+      if (!sessionActive) return;
+      try {
+        stageVisionStream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: false });
+        stageVisionVideo.srcObject = stageVisionStream;
+        stageVisionWrap.style.display = 'block';
+        stageVisionCountEl.textContent = 'Camera on. Sending frames to stage vision every 5s…';
+      } catch (e) {
+        stageVisionCountEl.textContent = 'Camera error: ' + e.message;
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = 320;
+      canvas.height = 240;
+      const ctx = canvas.getContext('2d');
+      const STAGE_VISION_INTERVAL_MS = 5000;
+
+      stageVisionIntervalId = setInterval(async () => {
+        if (!sessionActive || !stageVisionStream || !stageVisionVideo.videoWidth) return;
+        try {
+          ctx.drawImage(stageVisionVideo, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+          const res = await fetch(API + '/api/story/stage-vision', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ frame: base64, generateImage: true }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            stageVisionCountEl.textContent = 'People: ' + (data.people_count ?? 0) + (data.new_entrant ? ' — New character!' : '');
+            if (data.character_beat && data.character_beat.narration) {
+              stageVisionNarrationEl.textContent = data.character_beat.narration;
+            }
+            if (data.imageUrl) {
+              stageVisionImageEl.src = data.imageUrl;
+              stageVisionImageEl.style.display = 'block';
+            }
+          } else {
+            stageVisionCountEl.textContent = 'Stage vision: ' + (data.details || data.error || res.status);
+          }
+        } catch (e) {
+          stageVisionCountEl.textContent = 'Stage vision error: ' + e.message;
+        }
+      }, STAGE_VISION_INTERVAL_MS);
     }
 
     async function startCameraEmotionLoop() {
@@ -387,6 +493,11 @@
     useCameraCheckbox.addEventListener('change', () => {
       if (sessionActive && useCameraCheckbox.checked) startCameraEmotionLoop();
       else if (!useCameraCheckbox.checked) stopCameraEmotionLoop();
+    });
+
+    useStageVisionCheckbox.addEventListener('change', () => {
+      if (sessionActive && useStageVisionCheckbox.checked) startStageVisionLoop();
+      else if (!useStageVisionCheckbox.checked) stopStageVisionLoop();
     });
 
     btnSetTheme.addEventListener('click', async () => {

@@ -142,3 +142,75 @@ function clamp(n, min, max) {
   if (Number.isNaN(n)) return min;
   return Math.max(min, Math.min(max, n));
 }
+
+/**
+ * Map free-text vision result (e.g. from Overshoot) to our music scene schema.
+ * Use a generic Overshoot prompt like: "In one word or short phrase, what is the person doing or feeling?
+ * Examples: laughing, yawning, scared, happy, sleepy, neutral, excited, sad."
+ * Then send the result here; no hardcoding of moods in the frontend.
+ * @param {string} text - Raw result from vision (e.g. "laugh", "no laugh", "yawn", "happy", "sleepy")
+ * @returns {{ emotion: string, mood: string, intensity: number, detected_events: string[] }}
+ */
+export function mapVisionTextToScene(text) {
+  const t = (text && String(text).toLowerCase().trim()) || '';
+  const detected_events = [];
+  let emotion = 'neutral';
+  let mood = 'calm';
+  let intensity = 0.4;
+
+  // Stage events (take first match; "no X" means skip that event)
+  if (/\b(no\s+)?laugh|laughing\b/.test(t) && !/no\s+laugh/.test(t)) {
+    detected_events.push('laugh');
+    emotion = 'happy';
+    mood = 'happy';
+    intensity = 0.6;
+  } else if (/\b(no\s+)?yawn|yawning\b/.test(t) && !/no\s+yawn/.test(t)) {
+    detected_events.push('yawn');
+    emotion = 'sleepy';
+    mood = 'sleepy';
+    intensity = 0.2;
+  } else if (/\bscared|fear|frightened|afraid\b/.test(t)) {
+    detected_events.push('scared');
+    emotion = 'scared';
+    mood = 'tense';
+    intensity = 0.7;
+  } else {
+    // No stage event; infer emotion/mood from keywords
+    if (/\bsleepy|sleeping|tired|drowsy\b/.test(t)) {
+      emotion = 'sleepy';
+      mood = 'sleepy';
+      intensity = 0.25;
+    } else if (/\bhappy|smile|joy|glad|cheerful\b/.test(t)) {
+      emotion = 'happy';
+      mood = 'happy';
+      intensity = 0.55;
+    } else if (/\bexcited|excitement|energetic\b/.test(t)) {
+      emotion = 'excited';
+      mood = 'happy';
+      intensity = 0.75;
+    } else if (/\bsad|sadness|down\b/.test(t)) {
+      emotion = 'sad';
+      mood = 'sad';
+      intensity = 0.3;
+    } else if (/\bcalm|peaceful|relaxed|serene\b/.test(t)) {
+      emotion = 'peaceful';
+      mood = 'calm';
+      intensity = 0.3;
+    } else if (/\bcurious|interested|wondering\b/.test(t)) {
+      emotion = 'curious';
+      mood = 'gentle';
+      intensity = 0.5;
+    } else if (/\bneutral|normal|nothing\b/.test(t) || t.length === 0) {
+      emotion = 'neutral';
+      mood = 'calm';
+      intensity = 0.4;
+    }
+  }
+
+  return {
+    emotion: normalizeEmotion(emotion),
+    mood: normalizeMood(mood),
+    intensity: clamp(intensity, 0, 1),
+    detected_events: detected_events.length ? detected_events : [],
+  };
+}

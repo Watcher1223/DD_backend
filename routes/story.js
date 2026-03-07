@@ -14,7 +14,7 @@ import {
   resetThrottle,
   DEFAULT_WEIGHTED_PROMPTS,
 } from '../ai/music_engine.js';
-import { analyzeEmotionFromFrame } from '../vision/emotion_analysis.js';
+import { analyzeEmotionFromFrame, mapVisionTextToScene } from '../vision/emotion_analysis.js';
 import { analyzeStageVision } from '../vision/stage_vision.js';
 import { generateSceneImage } from '../ai/nanobanana.js';
 import { detectToyInFrame } from '../vision/object_detection.js';
@@ -246,6 +246,61 @@ router.post('/story/emotion-from-camera', async (req, res) => {
     const status = err.message?.includes('required') || err.message?.includes('Gemini') ? 503 : 500;
     res.status(status).json({
       error: 'Emotion analysis failed',
+      details: err.message,
+    });
+  }
+});
+
+/**
+ * POST /api/story/vision-event
+ * Accept a free-text vision result (e.g. from Overshoot) and feed it into music without hardcoding.
+ * Body: { text: string }. Maps text to emotion/mood/detected_events and updates Lyria if session active.
+ */
+router.post('/story/vision-event', async (req, res) => {
+  const text = req.body?.text;
+  if (text === undefined || text === null) {
+    return res.status(400).json({ error: 'text is required (vision result string)' });
+  }
+
+  try {
+    const signals = mapVisionTextToScene(String(text));
+    const theme = activeStorySession?.userTheme || 'bedtime';
+    let musicUpdated = false;
+
+    if (activeStorySession) {
+      const storySession = getStorySession(activeStorySession.campaignId);
+      const scene = {
+        theme,
+        mood: signals.mood,
+        intensity: signals.intensity,
+        emotion: signals.emotion,
+        detected_events: signals.detected_events || [],
+        storyEnergy: storySession?.story_energy,
+      };
+      const result = generateMusicPrompts(scene);
+      const { weightedPrompts, theme: t, mood, intensity, stageEventConfig } = result;
+      if (shouldUpdatePrompts({ theme: t, mood, intensity })) {
+        await activeStorySession.handle.updatePrompts(weightedPrompts);
+        if (stageEventConfig) {
+          activeStorySession.handle.setMusicGenerationConfig(stageEventConfig);
+        }
+        markPromptsApplied({ theme: t, mood, intensity });
+        musicUpdated = true;
+      }
+    }
+
+    res.json({
+      emotion: signals.emotion,
+      mood: signals.mood,
+      theme,
+      intensity: signals.intensity,
+      detected_events: signals.detected_events || [],
+      musicUpdated,
+    });
+  } catch (err) {
+    console.error('[STORY] Vision-event failed:', err.message);
+    res.status(500).json({
+      error: 'Vision event failed',
       details: err.message,
     });
   }
