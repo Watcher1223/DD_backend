@@ -34,6 +34,7 @@ Respond with ONLY valid JSON in this exact format:
       "hair": "color, length, style",
       "clothing": "description of visible clothing",
       "features": "distinguishing features like glasses, freckles, etc",
+      "skin_tone": "natural skin tone description (e.g. light, medium, olive, tan, brown, dark brown)",
       "age_range": "estimated age range like 5-7"
     }
   ],

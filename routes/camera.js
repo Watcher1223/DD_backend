@@ -69,10 +69,15 @@ function storeReferenceFrame(frame, campaignId, people) {
  */
 function buildSubjectDescription(person) {
   const parts = [];
-  if (person.age_range) parts.push(person.age_range);
-  if (person.hair) parts.push(`${person.hair} hair`);
+  if (person.character_description) {
+    parts.push(person.character_description);
+  } else {
+    if (person.age_range) parts.push(person.age_range);
+    if (person.skin_tone) parts.push(`${person.skin_tone} skin`);
+    if (person.hair) parts.push(`${person.hair} hair`);
+    if (person.features) parts.push(person.features);
+  }
   if (person.clothing) parts.push(`wearing ${person.clothing}`);
-  if (person.features) parts.push(person.features);
   return parts.length > 0 ? parts.join(', ') : 'a person';
 }
 

@@ -190,11 +190,8 @@ router.get('/health', (req, res) => {
     has_nanobanana: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.NANOBANANA_API_KEY),
     has_lyria: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.LYRIA_API_KEY),
     has_semantic_memory: isChromaEnabled(),
-<<<<<<< HEAD
     has_livekit: !!(process.env.LIVEKIT_URL && process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET),
-=======
     has_subject_customization: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT),
->>>>>>> fee6110 (iamge gen improvements)
   });
 });
 

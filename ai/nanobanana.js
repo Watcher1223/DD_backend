@@ -95,7 +95,7 @@ async function generateWithSubjectCustomization(scenePrompt, referenceFrames) {
   try {
     const bearerToken = await getVertexToken();
 
-    const subjectDesc = referenceFrames[0].subjectDescription;
+    const subjectDesc = pickRichestDescription(referenceFrames);
     const customPrompt = buildCustomizationPrompt(scenePrompt, subjectDesc);
 
     const referenceImages = referenceFrames.map((frame) => ({
@@ -108,9 +108,19 @@ async function generateWithSubjectCustomization(scenePrompt, referenceFrames) {
       },
     }));
 
+    referenceImages.push({
+      referenceType: 'REFERENCE_TYPE_CONTROL',
+      referenceId: 2,
+      referenceImage: { bytesBase64Encoded: referenceFrames[0].data },
+      controlImageConfig: {
+        controlType: 'CONTROL_TYPE_FACE_MESH',
+        enableControlImageComputation: true,
+      },
+    });
+
     const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${GOOGLE_CLOUD_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/${IMAGEN_CUSTOM_MODEL}:predict`;
 
-    console.log(`[IMAGEN_CUSTOM] Generating with ${referenceFrames.length} reference(s), subject: "${subjectDesc}"`);
+    console.log(`[IMAGEN_CUSTOM] Generating with ${referenceFrames.length} subject ref(s) + face mesh, subject: "${subjectDesc}"`);
 
     const res = await fetch(url, {
       method: 'POST',
@@ -124,8 +134,10 @@ async function generateWithSubjectCustomization(scenePrompt, referenceFrames) {
           referenceImages,
         }],
         parameters: {
-          sampleCount: 1,
+          sampleCount: 2,
+          aspectRatio: '16:9',
           personGeneration: 'allow_all',
+          negativePrompt: 'generic face, different person, wrong face, multiple faces, blurry face, disfigured, low quality, bad anatomy',
         },
       }),
     });
@@ -172,14 +184,31 @@ async function parseImagenResponse(res, tag) {
 }
 
 /**
- * Build the prompt for Imagen 3 Customization using the recommended template.
- * Injects [1] subject references into the scene description.
- * @param {string} scenePrompt - Original scene prompt from Gemini
+ * Build the prompt for Imagen 3 Customization.
+ * Keeps the Gemini scene_prompt intact and prepends subject/control tokens
+ * so Imagen knows which reference images map to the character in the scene.
+ * @param {string} scenePrompt - Original scene prompt from Gemini (already character-forward)
  * @param {string} subjectDesc - Short description of the person
  * @returns {string}
  */
 function buildCustomizationPrompt(scenePrompt, subjectDesc) {
-  return `Create an image about ${subjectDesc} [1] to match the description: ${scenePrompt}. The main character is ${subjectDesc} [1]. Preserve the subject's face and likeness accurately.`;
+  return `A portrait of ${subjectDesc} [1] with the face structure from [2]: ${scenePrompt}. Preserve exact facial features, skin tone, and face shape of the person [1]. Natural human eyes, high quality.`;
+}
+
+/**
+ * Pick the longest (richest) subject description across all reference frames.
+ * Later frames may capture better angles or lighting, producing more detail.
+ * @param {Array<{ subjectDescription: string }>} frames
+ * @returns {string}
+ */
+function pickRichestDescription(frames) {
+  let best = frames[0].subjectDescription || 'a person';
+  for (const f of frames) {
+    if (f.subjectDescription && f.subjectDescription.length > best.length) {
+      best = f.subjectDescription;
+    }
+  }
+  return best;
 }
 
 // ── Public API ──────────────────────────────────

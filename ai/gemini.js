@@ -32,11 +32,12 @@ RULES:
 - Reference previous events and characters from the campaign history
 - Create dramatic tension and memorable moments
 - Never break character
+- In scene_prompt, ALWAYS describe the main character prominently in the foreground with their face clearly visible. Never describe a scene without the character featured.
 
 You must respond with ONLY valid JSON in this exact format (no markdown, no code fences; escape any quotes inside strings with \\ and no newlines inside string values):
 {
   "narration": "Your 2-3 sentence narration here",
-  "scene_prompt": "A detailed visual description for an image generator: fantasy illustration of [scene], dramatic lighting, cinematic composition, oil painting style",
+  "scene_prompt": "A detailed visual description for an image generator: the main character [describe their appearance] prominently featured in [scene], face clearly visible, dramatic lighting, cinematic composition, fantasy illustration style",
   "music_mood": "one of: tavern, forest, battle, mystery, victory, danger, calm, epic",
   "characters_mentioned": ["list", "of", "character", "names"],
   "location": "current location name"
@@ -297,14 +298,14 @@ export async function generateStoryBeat(playerAction, diceRoll, campaign, sessio
 }
 
 const STORY_BEAT_DEFAULTS = {
-  scene_prompt: 'fantasy illustration, dramatic lighting, oil painting style',
+  scene_prompt: 'The main character standing prominently in a dark fantasy tavern, face clearly visible, dramatic lighting, cinematic composition, fantasy illustration style',
   music_mood: 'calm',
   characters_mentioned: [],
   location: 'Unknown',
 };
 
 const BEDTIME_BEAT_DEFAULTS = {
-  scene_prompt: 'gentle bedtime illustration, soft lighting, dreamy watercolor style',
+  scene_prompt: 'A close-up of the main character in a cozy moonlit bedroom, face clearly visible, soft lighting, dreamy, child-friendly, storybook illustration style',
   theme: 'bedtime',
   genre: 'lullaby',
   mood: 'calm',
@@ -385,18 +386,21 @@ function buildAppearanceContext(profiles) {
   }
   console.log(`[GEMINI] Injecting ${profiles.length} appearance(s) into prompt`);
 
+  const mainChar = profiles[0];
   const lines = ['', 'CHARACTER APPEARANCES (from camera):'];
   for (const { label, appearance } of profiles) {
     const parts = [label];
     if (appearance.fantasy_name) parts.push(`storybook name: ${appearance.fantasy_name}`);
     if (appearance.character_description) parts.push(`storybook description: ${appearance.character_description}`);
     if (appearance.hair) parts.push(`hair: ${appearance.hair}`);
+    if (appearance.skin_tone) parts.push(`skin tone: ${appearance.skin_tone}`);
     if (appearance.clothing) parts.push(`clothing: ${appearance.clothing}`);
     if (appearance.features) parts.push(`features: ${appearance.features}`);
     if (appearance.age_range) parts.push(`age: ${appearance.age_range}`);
     lines.push(`- ${parts.join(', ')}`);
   }
-  lines.push('Include these appearance details in the scene_prompt so generated images match the real people.');
+  lines.push('');
+  lines.push(`The MAIN CHARACTER of the story is "${mainChar.label}"${mainChar.appearance?.fantasy_name ? ` (${mainChar.appearance.fantasy_name})` : ''}. In every scene_prompt, describe this person as the central figure in the foreground with their face clearly visible. Use their specific appearance details (hair, skin tone, clothing, features) in the description.`);
   return lines.join('\n');
 }
 
@@ -422,11 +426,12 @@ RULES:
 - Use soft, child-friendly imagery such as friendly animals, stars, dreams, gentle magic, and comforting routines
 - Never include violence, fear, death, peril, threats, or anything inappropriate for a child
 - Never break character
+- In scene_prompt, ALWAYS describe the main character prominently in the foreground with their face clearly visible. Never describe a scene without the character featured.
 
 You must respond with ONLY valid JSON in this exact format (no markdown, no code fences; escape any quotes inside strings with \\ and no newlines inside string values):
 {
   "narration": "Your 2-3 sentence calming narration here",
-  "scene_prompt": "A detailed visual description for an image generator: gentle bedtime illustration of [scene], soft lighting, dreamy, child-friendly, watercolor style",
+  "scene_prompt": "A close-up or medium shot of the main character [describe their appearance] in [scene]. The character's face is clearly visible and prominently featured. Soft lighting, dreamy, child-friendly, storybook illustration style",
   "theme": "one of: magical forest, bedtime, under the sea, fairy tale, space adventure, calm, fantasy",
   "genre": "fantasy or lullaby",
   "mood": "one of: calm, peaceful, sleepy, gentle, dreamy",
