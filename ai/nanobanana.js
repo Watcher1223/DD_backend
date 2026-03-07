@@ -13,6 +13,7 @@
 // ═══════════════════════════════════════════════
 
 import { GoogleAuth } from 'google-auth-library';
+import { getCanonicalDescription } from '../memory/reference_store.js';
 
 const NANOBANANA_API_KEY = process.env.NANOBANANA_API_KEY;
 const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT;
@@ -88,14 +89,16 @@ async function generateWithImagen(scenePrompt) {
  * image preserves the user's actual likeness.
  * @param {string} scenePrompt - Scene description from Gemini
  * @param {Array<{ data: string, mimeType: string, subjectDescription: string }>} referenceFrames
+ * @param {number} [campaignId] - Campaign ID for canonical description lookup
  * @returns {Promise<{ imageUrl: string, source: string }|null>}
  */
-async function generateWithSubjectCustomization(scenePrompt, referenceFrames) {
+async function generateWithSubjectCustomization(scenePrompt, referenceFrames, campaignId) {
   if (!GOOGLE_CLOUD_PROJECT || referenceFrames.length === 0) return null;
   try {
     const bearerToken = await getVertexToken();
 
-    const subjectDesc = pickRichestDescription(referenceFrames);
+    const canonical = campaignId != null ? getCanonicalDescription(campaignId) : undefined;
+    const subjectDesc = canonical || pickRichestDescription(referenceFrames);
     const customPrompt = buildCustomizationPrompt(scenePrompt, subjectDesc);
 
     const referenceImages = referenceFrames.map((frame) => ({
@@ -134,7 +137,7 @@ async function generateWithSubjectCustomization(scenePrompt, referenceFrames) {
           referenceImages,
         }],
         parameters: {
-          sampleCount: 2,
+          sampleCount: 4,
           aspectRatio: '16:9',
           personGeneration: 'allow_all',
           negativePrompt: 'generic face, different person, wrong face, multiple faces, blurry face, disfigured, low quality, bad anatomy',
@@ -170,6 +173,8 @@ async function parseImagenResponse(res, tag) {
     return null;
   }
 
+  console.log(`[${tag}] Received ${predictions.length} prediction(s)`);
+
   const first = predictions[0];
   const b64 = first.bytesBase64Encoded ?? first.bytesBase64encoded;
   const mimeType = first.mimeType || 'image/png';
@@ -184,15 +189,35 @@ async function parseImagenResponse(res, tag) {
 }
 
 /**
- * Build the prompt for Imagen 3 Customization.
- * Keeps the Gemini scene_prompt intact and prepends subject/control tokens
- * so Imagen knows which reference images map to the character in the scene.
+ * Strip heavy artistic stylization tokens from a scene prompt so they don't
+ * fight Imagen's face preservation during Subject Customization.
+ * Keeps the scene content intact while softening style overrides.
+ * @param {string} scenePrompt
+ * @returns {string}
+ */
+function cleanScenePromptForCustomization(scenePrompt) {
+  return scenePrompt
+    .replace(/watercolor\s+style/gi, '')
+    .replace(/oil\s+painting\s+style/gi, '')
+    .replace(/storybook\s+illustration\s+style/gi, 'illustration style')
+    .replace(/fantasy\s+illustration\s+style/gi, 'illustration style')
+    .replace(/cartoon\s+style/gi, '')
+    .replace(/anime\s+style/gi, '')
+    .replace(/painted\s+style/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Build the prompt for Imagen 3 Customization following Google's recommended
+ * template for person + face mesh references.
  * @param {string} scenePrompt - Original scene prompt from Gemini (already character-forward)
  * @param {string} subjectDesc - Short description of the person
  * @returns {string}
  */
 function buildCustomizationPrompt(scenePrompt, subjectDesc) {
-  return `A portrait of ${subjectDesc} [1] with the face structure from [2]: ${scenePrompt}. Preserve exact facial features, skin tone, and face shape of the person [1]. Natural human eyes, high quality.`;
+  const cleaned = cleanScenePromptForCustomization(scenePrompt);
+  return `A portrait of ${subjectDesc} [1] with the face structure from [2]: ${cleaned}. Preserve exact facial features, skin tone, and face shape of ${subjectDesc} [1]. Natural human eyes, high quality, 4k, masterpiece, super details, skin texture, soft realistic lighting, vibrant colors.`;
 }
 
 /**
@@ -219,14 +244,20 @@ function pickRichestDescription(frames) {
  * Priority without reference frames: NanoBanana → Imagen Fast.
  * @param {string} scenePrompt - Visual description of the scene
  * @param {Array<{ data: string, mimeType: string, subjectDescription: string }>} [referenceFrames] - Camera reference photos
+ * @param {number} [campaignId] - Campaign ID for canonical description lookup
  * @returns {Promise<{ imageUrl: string, source: string }>}
  */
-export async function generateSceneImage(scenePrompt, referenceFrames = []) {
+export async function generateSceneImage(scenePrompt, referenceFrames = [], campaignId) {
   // ── Imagen 3 Customization (personalized, if reference frames available) ──
   if (referenceFrames.length > 0) {
-    const customResult = await generateWithSubjectCustomization(scenePrompt, referenceFrames);
+    const customResult = await generateWithSubjectCustomization(scenePrompt, referenceFrames, campaignId);
     if (customResult) return customResult;
-    console.warn('[SCENE] Customization failed, falling back to text-only generation');
+
+    console.warn('[SCENE] Customization attempt 1 failed, retrying once');
+    const retryResult = await generateWithSubjectCustomization(scenePrompt, referenceFrames, campaignId);
+    if (retryResult) return retryResult;
+
+    console.warn('[SCENE] Customization failed after retry, falling back to text-only');
   }
 
   // ── NanoBanana 2 (YC x DeepMind hackathon; docs: nananobanana.com API v1) ──

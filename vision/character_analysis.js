@@ -22,6 +22,8 @@ If multiple children or adults appear, append a number (e.g. "child_1", "child_2
 Keep the label grounded ("child", "adult"), but also invent a gentle storybook-style fantasy name inspired by the person's appearance.
 Write one short character_description that sounds like a warm illustrated storybook caption.
 
+For each person, estimate the bounding box of their face as normalized coordinates (0.0-1.0 relative to image width/height). x,y is the top-left corner.
+
 Also briefly describe the setting/environment visible in the frame.
 
 Respond with ONLY valid JSON in this exact format:
@@ -35,7 +37,8 @@ Respond with ONLY valid JSON in this exact format:
       "clothing": "description of visible clothing",
       "features": "distinguishing features like glasses, freckles, etc",
       "skin_tone": "natural skin tone description (e.g. light, medium, olive, tan, brown, dark brown)",
-      "age_range": "estimated age range like 5-7"
+      "age_range": "estimated age range like 5-7",
+      "face_box": { "x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0 }  // normalized 0.0-1.0
     }
   ],
   "setting": "brief description of the environment"

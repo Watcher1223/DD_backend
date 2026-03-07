@@ -11,6 +11,9 @@ const MAX_FRAMES = 4;
 /** @type {Map<number, Array<{ data: string, mimeType: string, subjectDescription: string }>>} */
 const store = new Map();
 
+/** @type {Map<number, string>} Canonical (merged) subject description per campaign */
+const canonicalDescriptions = new Map();
+
 /**
  * Add a reference frame captured from the camera.
  * Keeps the most recent MAX_FRAMES per campaign.
@@ -48,9 +51,33 @@ export function hasReferenceFrames(campaignId) {
 }
 
 /**
- * Clear all reference frames for a campaign (e.g. on reset).
+ * Set or merge the canonical subject description for a campaign.
+ * Keeps the longer (richer) description when merging.
+ * @param {number} campaignId
+ * @param {string} description
+ */
+export function setCanonicalDescription(campaignId, description) {
+  const existing = canonicalDescriptions.get(campaignId);
+  if (!existing || description.length > existing.length) {
+    canonicalDescriptions.set(campaignId, description);
+    console.log(`[REF_STORE] Canonical description updated for campaign ${campaignId}: "${description}"`);
+  }
+}
+
+/**
+ * Get the canonical subject description for a campaign.
+ * @param {number} campaignId
+ * @returns {string|undefined}
+ */
+export function getCanonicalDescription(campaignId) {
+  return canonicalDescriptions.get(campaignId);
+}
+
+/**
+ * Clear all reference frames and canonical description for a campaign (e.g. on reset).
  * @param {number} campaignId
  */
 export function clearReferenceFrames(campaignId) {
   store.delete(campaignId);
+  canonicalDescriptions.delete(campaignId);
 }

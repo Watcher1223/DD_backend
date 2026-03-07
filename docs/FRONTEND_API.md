@@ -46,6 +46,8 @@ Before or after loading the app, call the health endpoint to know what’s live 
 | `has_nanobanana` | boolean | `true` = NanoBanana or Vertex Imagen available for images. `false` = action will fail for image until configured. |
 | `has_lyria` | boolean | `true` = Vertex Lyria 2 available for music. `false` = music will return 502 until GOOGLE_CLOUD_PROJECT + billing. |
 | `has_semantic_memory` | boolean | `true` = Chroma semantic memory connected. Story generation uses retrieved character/scene memories for better consistency. `false` = stories use recent history only (still fully functional). |
+| `has_subject_customization` | boolean | `true` = Imagen 3 Subject Customization available. When camera reference frames exist, generated images use the player’s actual face/likeness. `false` = images use generic characters. |
+| `has_livekit` | boolean | `true` = LiveKit real-time video configured. |
 
 **Frontend recommendations:**
 
@@ -53,6 +55,7 @@ Before or after loading the app, call the health endpoint to know what’s live 
 - If `has_nanobanana` is false, scene image may fail (503) until NanoBanana or Imagen is configured.
 - If `has_lyria` is false, music URLs will return 502; hide or disable music or show “Music unavailable”.
 - If `has_semantic_memory` is true, character appearances and story scenes are indexed for retrieval. Image and narration consistency across beats improves automatically; no frontend changes required.
+- If `has_subject_customization` is true, prompt the user to scan their face with the camera **before** starting the story. Without a camera scan first, all generated images will show generic characters instead of the player’s likeness.
 - Use `campaign_events` to show “Session has N events” or to decide whether to offer “Continue” vs “New game”.
 
 ---
@@ -298,16 +301,22 @@ Analyze a webcam frame to identify people and extract appearance descriptions. R
   "people": [
     {
       "label": "child",
+      "fantasy_name": "Starling",
+      "character_description": "A bright-eyed child with an adventurous smile",
       "hair": "brown, curly",
       "clothing": "blue pajamas",
       "features": "freckles, smiling",
+      "skin_tone": "light",
       "age_range": "5-7"
     },
     {
       "label": "adult",
+      "fantasy_name": "Thornwood",
+      "character_description": "A warm, steady guardian with a gentle gaze",
       "hair": "dark, short",
       "clothing": "gray sweater",
       "features": "glasses, beard",
+      "skin_tone": "medium",
       "age_range": "30-35"
     }
   ],
@@ -364,11 +373,60 @@ Return stored character profiles for a campaign.
 
 **Frontend recommendations:**
 
-- Call `POST /api/camera/analyze` once before starting the story (or periodically to update appearances).
-- You do NOT need to send frames continuously; one frame every few seconds is sufficient.
-- Profiles persist across requests — once analyzed, every `POST /api/action` automatically includes character appearances in the scene prompt.
+- **CRITICAL: Call `POST /api/camera/analyze` BEFORE the first story beat.** This is the step that captures the player's face as a reference image. Without it, all generated images will show generic characters instead of the player's likeness.
+- You do NOT need to send frames continuously; one good frame is sufficient. Sending 2-3 frames from slightly different angles improves likeness quality.
+- For best results, ensure the player's face is well-lit, front-facing, and clearly visible in the frame.
+- Profiles and reference frames persist across requests — once analyzed, every `POST /api/action` and `POST /api/story/beat` automatically uses the stored reference frames for personalized image generation.
 - Use `GET /api/camera/profiles` to restore/display saved profiles on page reload.
-- Campaign reset (`POST /api/campaign/reset`) clears profiles along with all other campaign data.
+- Campaign reset (`POST /api/campaign/reset`) clears profiles, reference frames, and all other campaign data.
+
+---
+
+## Personalized character images (critical flow)
+
+When `has_subject_customization` is true in the health response, the backend can generate images where the player IS the character in the story. This requires camera reference frames to be captured first.
+
+### Required order of operations
+
+```
+1. POST /api/camera/analyze   <-- captures face reference (MUST happen first)
+2. POST /api/action            <-- or /api/story/beat; images now use player's face
+```
+
+If step 1 is skipped, step 2 still works but images will show generic characters.
+
+### How it works
+
+1. `POST /api/camera/analyze` captures the webcam frame and stores it as a reference image (up to 4 frames per campaign).
+2. When `POST /api/action` or `POST /api/story/beat` generates an image, the backend checks for stored reference frames.
+3. If frames exist, Imagen 3 Subject Customization generates the scene using the player's actual face (face mesh + likeness preservation).
+4. If no frames exist, the backend falls back to text-only image generation (generic characters).
+
+### `image.source` values
+
+| Source | Meaning |
+|--------|---------|
+| `imagen_custom` | Personalized image using player's face reference. Best quality for character likeness. |
+| `nanobanana` | NanoBanana text-only generation. Generic characters. |
+| `imagen` | Vertex Imagen text-only generation. Generic characters. |
+
+### Recommended frontend flow
+
+```
+health check (/api/health)
+    │
+    ├─ has_subject_customization: true
+    │   │
+    │   ├─ Show "Scan your face" prompt
+    │   ├─ Capture webcam frame
+    │   ├─ POST /api/camera/analyze
+    │   ├─ Show detected character ("We see: dark brown hair, hoodie...")
+    │   └─ Proceed to story
+    │
+    └─ has_subject_customization: false
+        │
+        └─ Skip camera step, proceed to story (generic characters)
+```
 
 ---
 
@@ -723,6 +781,7 @@ Use this checklist to verify the full affective bedtime story flow locally (Segm
 
 - [ ] Call `GET /api/health` on load and use `has_gemini`, `has_vision`, `has_speech`, `has_nanobanana`, `has_lyria`, `has_semantic_memory` to adapt UI (labels, disabled features, or “demo mode”).
 - [ ] If `has_vision` is true, offer camera capture for character analysis before starting the story.
+- [ ] **If `has_subject_customization` is true, the camera scan MUST happen before the first story beat.** Show a "Scan your face" step in the onboarding flow. Without this, all generated images show generic characters instead of the player.
 - [ ] If `has_speech` is true, show a microphone button for voice input alongside the text field.
 - [ ] Show loading state for `POST /api/action` (2–5+ seconds typical).
 - [ ] Display `narration` and play `narrationAudioUrl` for voice when desired.

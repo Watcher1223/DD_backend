@@ -29,7 +29,11 @@ export function parseGeminiJson(raw, defaults) {
     return JSON.parse(text);
   } catch (e) {
     if (!(e instanceof SyntaxError)) throw e;
-    const repaired = repairTruncatedJson(text, defaults);
+    const sanitized = fixNewlinesInStrings(text);
+    try {
+      return JSON.parse(sanitized);
+    } catch (_) {}
+    const repaired = repairTruncatedJson(sanitized, defaults);
     if (repaired) {
       try {
         return JSON.parse(repaired);
@@ -38,6 +42,18 @@ export function parseGeminiJson(raw, defaults) {
     console.error('[GEMINI] Invalid JSON from model (first 300 chars):', text.slice(0, 300));
     throw new Error('Gemini returned invalid JSON. Try again or rephrase your action.');
   }
+}
+
+/**
+ * Replace literal newlines inside JSON string values with escaped \\n.
+ * Gemini sometimes returns multi-line strings which are invalid JSON.
+ * @param {string} text
+ * @returns {string}
+ */
+function fixNewlinesInStrings(text) {
+  return text.replace(/"(?:[^"\\]|\\.)*"/gs, (match) =>
+    match.replace(/\n/g, '\\n').replace(/\r/g, '\\r'),
+  );
 }
 
 /**

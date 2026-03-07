@@ -9,6 +9,7 @@ import { getActiveStorySession, applyCharacterInjectionToLyria } from './story.j
 import { processFrame } from '../workers/stage_vision_worker.js';
 import { generateCharacterInjectionBeat } from '../ai/gemini.js';
 import { generateSceneImage } from '../ai/nanobanana.js';
+import { getReferenceFrames } from '../memory/reference_store.js';
 import { queryStageIdentityByDescription, isReidentificationMatch, upsertStageIdentity } from '../memory/chroma.js';
 
 const router = Router();
@@ -172,7 +173,8 @@ router.post('/livekit/vision-frame', async (req, res) => {
       }
       if (generateImage && character_beat.scene_prompt) {
         try {
-          const imgResult = await generateSceneImage(character_beat.scene_prompt);
+          const lkRefs = getReferenceFrames(session.campaignId);
+          const imgResult = await generateSceneImage(character_beat.scene_prompt, lkRefs, session.campaignId);
           if (imgResult?.imageUrl) imageUrl = imgResult.imageUrl;
         } catch (imgErr) {
           console.warn('[LIVEKIT] Character card image failed:', imgErr.message);

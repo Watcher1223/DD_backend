@@ -7,11 +7,12 @@
 // ═══════════════════════════════════════════════
 
 import { Router } from 'express';
+import sharp from 'sharp';
 import { analyzeCharacters } from '../vision/character_analysis.js';
 import { resolveCampaignId } from './resolve_campaign.js';
 import { createPairing, resolvePairing, pruneExpired } from '../utils/pairing.js';
 import { upsertAppearanceMemory } from '../memory/chroma.js';
-import { addReferenceFrame } from '../memory/reference_store.js';
+import { addReferenceFrame, setCanonicalDescription } from '../memory/reference_store.js';
 import { parseFrame } from '../utils/media.js';
 import {
   upsertSessionProfile,
@@ -36,7 +37,7 @@ async function analyzeAndStore(frame, campaignId) {
     upsertAppearanceMemory(campaignId, person, analysis.setting).catch(() => {});
   }
 
-  storeReferenceFrame(frame, campaignId, analysis.people);
+  await storeReferenceFrame(frame, campaignId, analysis.people);
 
   return {
     people: analysis.people,
@@ -48,17 +49,65 @@ async function analyzeAndStore(frame, campaignId) {
 
 /**
  * Save the raw camera frame as a subject reference for Imagen Customization.
- * Uses the first detected person's description as the subject label.
+ * Crops to the detected face when a face_box is available so the face is
+ * centered and occupies most of the image (per Google's reference image guidelines).
  */
-function storeReferenceFrame(frame, campaignId, people) {
+async function storeReferenceFrame(frame, campaignId, people) {
   if (people.length === 0) return;
   try {
     const { data, mimeType } = parseFrame(frame);
     const primary = people[0];
     const desc = buildSubjectDescription(primary);
-    addReferenceFrame(campaignId, data, mimeType, desc);
+    const cropped = await cropToFace(data, mimeType, primary.face_box);
+    addReferenceFrame(campaignId, cropped.data, cropped.mimeType, desc);
+    setCanonicalDescription(campaignId, desc);
   } catch (err) {
     console.warn('[CAMERA] Failed to store reference frame:', err.message);
+  }
+}
+
+/**
+ * Crop a base64 image buffer around the detected face bounding box.
+ * Adds padding so the face occupies roughly half the output image.
+ * Falls back to the original frame if face_box is missing or cropping fails.
+ * @param {string} base64Data - Raw base64 image data
+ * @param {string} mimeType - Image MIME type
+ * @param {{ x: number, y: number, width: number, height: number }} faceBox - Normalized 0-1 coordinates
+ * @returns {Promise<{ data: string, mimeType: string }>}
+ */
+async function cropToFace(base64Data, mimeType, faceBox) {
+  if (!faceBox || !faceBox.width || !faceBox.height) {
+    return { data: base64Data, mimeType };
+  }
+
+  try {
+    const buf = Buffer.from(base64Data, 'base64');
+    const meta = await sharp(buf).metadata();
+    const imgW = meta.width;
+    const imgH = meta.height;
+
+    const faceW = Math.round(faceBox.width * imgW);
+    const faceH = Math.round(faceBox.height * imgH);
+    const faceCx = Math.round((faceBox.x + faceBox.width / 2) * imgW);
+    const faceCy = Math.round((faceBox.y + faceBox.height / 2) * imgH);
+
+    const pad = 0.5;
+    const cropW = Math.min(Math.round(faceW * (1 + pad * 2)), imgW);
+    const cropH = Math.min(Math.round(faceH * (1 + pad * 2)), imgH);
+
+    const left = Math.max(0, Math.min(faceCx - Math.round(cropW / 2), imgW - cropW));
+    const top  = Math.max(0, Math.min(faceCy - Math.round(cropH / 2), imgH - cropH));
+
+    const croppedBuf = await sharp(buf)
+      .extract({ left, top, width: cropW, height: cropH })
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    console.log(`[CAMERA] Face-cropped reference: ${imgW}x${imgH} → ${cropW}x${cropH}`);
+    return { data: croppedBuf.toString('base64'), mimeType: 'image/jpeg' };
+  } catch (err) {
+    console.warn('[CAMERA] Face crop failed, using full frame:', err.message);
+    return { data: base64Data, mimeType };
   }
 }
 

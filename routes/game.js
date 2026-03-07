@@ -11,7 +11,7 @@ import { getMusicForMood, getAvailableMoods } from '../ai/lyria.js';
 import { detectDiceRoll } from '../vision/dice_detection.js';
 import { resolveCampaignId } from './resolve_campaign.js';
 import { isChromaEnabled, clearCampaignMemory } from '../memory/chroma.js';
-import { clearReferenceFrames } from '../memory/reference_store.js';
+import { clearReferenceFrames, getReferenceFrames } from '../memory/reference_store.js';
 import {
   getCampaign,
   appendEvent,
@@ -58,8 +58,9 @@ router.post('/action', async (req, res) => {
     const storyBeat = await generateStoryBeat(action, resolvedDice, campaign, sessionProfiles);
 
     // Step 3 & 4: Generate image and music IN PARALLEL for speed
+    const refs = getReferenceFrames(campaignId);
     const [imageResult, musicResult] = await Promise.all([
-      generateSceneImage(storyBeat.scene_prompt),
+      generateSceneImage(storyBeat.scene_prompt, refs, campaignId),
       getMusicForMood(storyBeat.music_mood),
     ]);
 
