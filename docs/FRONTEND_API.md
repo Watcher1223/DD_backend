@@ -604,6 +604,9 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 | GET | `/api/health` | Status and real-data flags |
 | POST | `/api/action` | Send action, get narration + image + music |
 | POST | `/api/camera/analyze` | Analyze webcam frame for character appearances |
+| POST | `/api/camera/pair` | Generate phone camera pairing code |
+| GET | `/api/camera/pair/:code` | Validate pairing code |
+| POST | `/api/camera/remote/:code` | Phone sends frame via pairing code |
 | GET | `/api/camera/profiles` | Get stored character profiles |
 | POST | `/api/speech/transcribe` | Transcribe audio to text |
 | GET | `/api/campaign` | Get campaign state (persisted) |

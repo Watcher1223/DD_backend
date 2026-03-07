@@ -118,6 +118,8 @@ app.get('/', (req, res) => {
       action: 'POST /api/action',
       dice: 'POST /api/dice',
       cameraAnalyze: 'POST /api/camera/analyze (character vision)',
+      cameraPair: 'POST /api/camera/pair (generate phone pairing code)',
+      cameraRemote: 'POST /api/camera/remote/:code (phone sends frame)',
       cameraProfiles: 'GET /api/camera/profiles (stored profiles)',
       speechTranscribe: 'POST /api/speech/transcribe (speech-to-text)',
       campaign: 'GET /api/campaign',

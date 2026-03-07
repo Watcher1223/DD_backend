@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Living Worlds — Phone Camera</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #111; color: #eee;
+      min-height: 100dvh;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+
+    .header {
+      padding: 0.75rem 1rem;
+      background: #1a1a1a;
+      text-align: center;
+      border-bottom: 1px solid #333;
+    }
+    .header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.5px; }
+    .header .code { font-family: monospace; color: #7cf; font-size: 0.85rem; margin-top: 0.25rem; }
+
+    .camera-wrap {
+      flex: 1; position: relative;
+      display: flex; align-items: center; justify-content: center;
+      background: #000;
+    }
+    video {
+      width: 100%; height: 100%;
+      object-fit: cover;
+    }
+    canvas { display: none; }
+
+    .controls {
+      padding: 1rem;
+      background: #1a1a1a;
+      display: flex; flex-direction: column; align-items: center; gap: 0.75rem;
+      border-top: 1px solid #333;
+    }
+    .capture-btn {
+      width: 72px; height: 72px; border-radius: 50%;
+      background: #fff; border: 4px solid #555;
+      cursor: pointer; transition: transform 0.1s;
+    }
+    .capture-btn:active { transform: scale(0.92); }
+    .capture-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .capture-btn.sending {
+      background: #7cf;
+      animation: pulse 0.8s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(0.9); } }
+
+    .switch-btn {
+      background: none; border: 1px solid #555;
+      color: #ccc; padding: 0.4rem 0.8rem; border-radius: 4px;
+      font-size: 0.8rem; cursor: pointer;
+    }
+
+    .status-bar {
+      text-align: center; font-size: 0.8rem;
+      min-height: 1.2rem; color: #999;
+    }
+    .status-bar.error { color: #f66; }
+    .status-bar.success { color: #6f6; }
+
+    .result-card {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      background: rgba(0,0,0,0.85);
+      padding: 0.75rem 1rem; max-height: 40vh;
+      overflow-y: auto; font-size: 0.8rem; line-height: 1.4;
+      transition: transform 0.3s ease;
+    }
+    .result-card.hidden { transform: translateY(100%); }
+    .result-card h3 { color: #7cf; margin-bottom: 0.25rem; font-size: 0.85rem; }
+    .person { margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid #333; }
+    .person:last-child { border-bottom: none; }
+
+    .screen { display: flex; flex-direction: column; height: 100dvh; }
+    .screen.hidden { display: none; }
+
+    .pair-screen {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 1.5rem; padding: 2rem;
+      text-align: center; min-height: 100dvh;
+    }
+    .pair-screen h1 { font-size: 1.25rem; }
+    .pair-screen .error-msg { color: #f66; font-size: 0.9rem; }
+    .pair-screen .spinner {
+      width: 32px; height: 32px; border: 3px solid #555;
+      border-top-color: #7cf; border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <!-- Pairing validation screen -->
+  <div id="pair-screen" class="pair-screen">
+    <h1>Living Worlds</h1>
+    <p>Connecting phone camera…</p>
+    <div class="spinner"></div>
+    <p id="pair-error" class="error-msg" style="display:none"></p>
+  </div>
+
+  <!-- Camera screen (shown after successful pairing) -->
+  <div id="camera-screen" class="screen hidden">
+    <div class="header">
+      <h1>Phone Camera</h1>
+      <div class="code">Code: <span id="display-code"></span></div>
+    </div>
+
+    <div class="camera-wrap">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas"></canvas>
+      <div id="result-card" class="result-card hidden"></div>
+    </div>
+
+    <div class="controls">
+      <div id="status" class="status-bar">Tap the button to capture</div>
+      <button id="capture-btn" class="capture-btn" title="Capture"></button>
+      <button id="switch-btn" class="switch-btn">Switch Camera</button>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin;
+    const params = new URLSearchParams(window.location.search);
+    const pairingCode = params.get('code');
+
+    const pairScreen   = document.getElementById('pair-screen');
+    const pairError    = document.getElementById('pair-error');
+    const cameraScreen = document.getElementById('camera-screen');
+    const displayCode  = document.getElementById('display-code');
+    const video        = document.getElementById('video');
+    const canvas       = document.getElementById('canvas');
+    const captureBtn   = document.getElementById('capture-btn');
+    const switchBtn    = document.getElementById('switch-btn');
+    const statusBar    = document.getElementById('status');
+    const resultCard   = document.getElementById('result-card');
+
+    let currentFacing = 'environment'; // start with rear camera
+    let stream = null;
+
+    // ── Pairing validation ──
+
+    async function validateAndStart() {
+      if (!pairingCode) {
+        showPairError('No pairing code provided. Generate one from the desktop app.');
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API}/api/camera/pair/${encodeURIComponent(pairingCode)}`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          showPairError(body.error || 'Invalid or expired pairing code.');
+          return;
+        }
+        showCameraScreen();
+      } catch (err) {
+        showPairError(`Cannot reach server: ${err.message}`);
+      }
+    }
+
+    function showPairError(msg) {
+      pairError.textContent = msg;
+      pairError.style.display = 'block';
+      pairScreen.querySelector('.spinner').style.display = 'none';
+    }
+
+    function showCameraScreen() {
+      pairScreen.style.display = 'none';
+      cameraScreen.classList.remove('hidden');
+      displayCode.textContent = pairingCode.toUpperCase();
+      startCamera();
+    }
+
+    // ── Camera ──
+
+    async function startCamera() {
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: currentFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        video.srcObject = stream;
+      } catch (err) {
+        setStatus(`Camera error: ${err.message}`, 'error');
+      }
+    }
+
+    switchBtn.addEventListener('click', () => {
+      currentFacing = currentFacing === 'environment' ? 'user' : 'environment';
+      startCamera();
+    });
+
+    // ── Capture & send ──
+
+    captureBtn.addEventListener('click', captureAndSend);
+
+    async function captureAndSend() {
+      if (captureBtn.disabled) return;
+
+      captureBtn.disabled = true;
+      captureBtn.classList.add('sending');
+      setStatus('Analyzing…', '');
+      resultCard.classList.add('hidden');
+
+      const frame = grabFrame();
+      if (!frame) {
+        setStatus('Camera not ready', 'error');
+        captureBtn.disabled = false;
+        captureBtn.classList.remove('sending');
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API}/api/camera/remote/${encodeURIComponent(pairingCode)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ frame }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          setStatus(data.error || 'Analysis failed', 'error');
+        } else {
+          setStatus(`Found ${data.stored} character(s) in ${data.elapsed_ms}ms`, 'success');
+          showResult(data);
+        }
+      } catch (err) {
+        setStatus(`Network error: ${err.message}`, 'error');
+      } finally {
+        captureBtn.disabled = false;
+        captureBtn.classList.remove('sending');
+      }
+    }
+
+    function grabFrame() {
+      const w = video.videoWidth;
+      const h = video.videoHeight;
+      if (!w || !h) return null;
+
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, w, h);
+      return canvas.toDataURL('image/jpeg', 0.85);
+    }
+
+    // ── UI helpers ──
+
+    function setStatus(msg, type) {
+      statusBar.textContent = msg;
+      statusBar.className = 'status-bar' + (type ? ` ${type}` : '');
+    }
+
+    function showResult(data) {
+      let html = '<h3>Detected Characters</h3>';
+      if (data.people && data.people.length) {
+        for (const p of data.people) {
+          html += `<div class="person"><strong>${esc(p.label)}</strong>`;
+          if (p.hair) html += ` · Hair: ${esc(p.hair)}`;
+          if (p.clothing) html += ` · Clothing: ${esc(p.clothing)}`;
+          if (p.features) html += ` · ${esc(p.features)}`;
+          html += '</div>';
+        }
+      }
+      if (data.setting) {
+        html += `<div style="margin-top:0.5rem;color:#aaa">Setting: ${esc(data.setting)}</div>`;
+      }
+      resultCard.innerHTML = html;
+      resultCard.classList.remove('hidden');
+    }
+
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    // ── Boot ──
+    validateAndStart();
+  </script>
+</body>
+</html>
