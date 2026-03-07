@@ -379,7 +379,11 @@ function buildBedtimeHistoryContext(campaign) {
  * @returns {string}
  */
 function buildAppearanceContext(profiles) {
-  if (!profiles || profiles.length === 0) return '';
+  if (!profiles || profiles.length === 0) {
+    console.log('[GEMINI] No appearance profiles — scene_prompt will be generic');
+    return '';
+  }
+  console.log(`[GEMINI] Injecting ${profiles.length} appearance(s) into prompt`);
 
   const lines = ['', 'CHARACTER APPEARANCES (from camera):'];
   for (const { label, appearance } of profiles) {

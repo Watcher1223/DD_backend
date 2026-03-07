@@ -471,7 +471,15 @@ router.post('/story/beat', async (req, res) => {
     const memoryContext = await retrieveMemoryContext(campaignId, action);
     const protagonist_description = activeStorySession?.protagonist_description;
     const language = activeStorySession?.language || req.body?.language || 'en';
+
+    console.log('[BEAT] Profiles:', sessionProfiles.length, sessionProfiles.map((p) => p.label));
+    console.log('[BEAT] Chroma memory:', memoryContext ? `${memoryContext.length} chars` : 'none');
+    if (protagonist_description) console.log('[BEAT] Protagonist:', protagonist_description);
+
     const beat = await generateSafeBedtimeStoryBeat(action, campaign, storySession, sessionProfiles, memoryContext, { protagonist_description, language });
+
+    console.log('[BEAT] scene_prompt →', beat.scene_prompt);
+
     const image = await generateSceneImage(beat.scene_prompt);
 
     const event = {

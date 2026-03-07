@@ -29,6 +29,7 @@ async function analyzeAndStore(frame, campaignId) {
 
   const frameTs = Date.now();
   for (const person of analysis.people) {
+    console.log(`[CAMERA] Stored ${person.label}: hair=${person.hair}, clothing=${person.clothing}, features=${person.features}`);
     upsertSessionProfile(campaignId, person.label, person, frameTs);
     upsertAppearanceMemory(campaignId, person, analysis.setting).catch(() => {});
   }
