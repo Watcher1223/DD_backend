@@ -73,9 +73,21 @@ export function initDb() {
       timestamp INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS session_profiles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      appearance TEXT NOT NULL,
+      source_frame_ts INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(campaign_id, label)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_events_campaign ON events(campaign_id);
     CREATE INDEX IF NOT EXISTS idx_characters_campaign ON campaign_characters(campaign_id);
     CREATE INDEX IF NOT EXISTS idx_locations_campaign ON campaign_locations(campaign_id);
+    CREATE INDEX IF NOT EXISTS idx_session_profiles_campaign ON session_profiles(campaign_id);
   `);
 
   return db;
@@ -206,6 +218,7 @@ export function resetCampaign(campaignId) {
   database.prepare('DELETE FROM events WHERE campaign_id = ?').run(campaignId);
   database.prepare('DELETE FROM campaign_characters WHERE campaign_id = ?').run(campaignId);
   database.prepare('DELETE FROM campaign_locations WHERE campaign_id = ?').run(campaignId);
+  database.prepare('DELETE FROM session_profiles WHERE campaign_id = ?').run(campaignId);
 
   database
     .prepare(
@@ -272,4 +285,52 @@ export function getEventCount(campaignId) {
 export function campaignExists(campaignId) {
   const row = getDb().prepare('SELECT 1 FROM campaigns WHERE id = ?').get(campaignId);
   return !!row;
+}
+
+// ── Session Profiles (vision-extracted character appearances) ──
+
+/**
+ * Insert or replace a session profile for a campaign.
+ * Uses UNIQUE(campaign_id, label) so re-analyzing a frame overwrites the previous profile.
+ * @param {number} campaignId
+ * @param {string} label - Role label (e.g. "child", "adult")
+ * @param {object} appearance - Full appearance description object from Gemini Vision
+ * @param {number} [frameTs] - Timestamp of the source frame
+ */
+export function upsertSessionProfile(campaignId, label, appearance, frameTs) {
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `INSERT INTO session_profiles (campaign_id, label, appearance, source_frame_ts, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(campaign_id, label) DO UPDATE SET
+         appearance = excluded.appearance,
+         source_frame_ts = excluded.source_frame_ts,
+         updated_at = excluded.updated_at`
+    )
+    .run(campaignId, label, JSON.stringify(appearance), frameTs ?? now, now, now);
+}
+
+/**
+ * Get all session profiles for a campaign.
+ * @param {number} campaignId
+ * @returns {Array<{label: string, appearance: object, updated_at: number}>}
+ */
+export function getSessionProfiles(campaignId) {
+  return getDb()
+    .prepare('SELECT label, appearance, updated_at FROM session_profiles WHERE campaign_id = ? ORDER BY id')
+    .all(campaignId)
+    .map((row) => ({
+      label: row.label,
+      appearance: JSON.parse(row.appearance),
+      updated_at: row.updated_at,
+    }));
+}
+
+/**
+ * Delete all session profiles for a campaign.
+ * @param {number} campaignId
+ */
+export function clearSessionProfiles(campaignId) {
+  getDb().prepare('DELETE FROM session_profiles WHERE campaign_id = ?').run(campaignId);
 }

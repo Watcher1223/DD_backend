@@ -1,0 +1,61 @@
+// ═══════════════════════════════════════════════
+// PARSE JSON — Shared Gemini JSON response parser
+// Handles markdown code fences, trailing text,
+// and truncated output from any Gemini call.
+// ═══════════════════════════════════════════════
+
+/**
+ * Parse Gemini's JSON response. Handles markdown code fences, trailing text, and truncated output.
+ * @param {string} raw - Raw text from Gemini response
+ * @param {object} [defaults] - Default values to inject when repairing truncated JSON
+ * @returns {object} Parsed JSON object
+ * @throws {Error} If JSON cannot be parsed or repaired
+ */
+export function parseGeminiJson(raw, defaults) {
+  let text = (raw || '').trim();
+  const codeBlock = /^```(?:json)?\s*([\s\S]*?)```\s*$/;
+  const m = text.match(codeBlock);
+  if (m) text = m[1].trim();
+  const firstBrace = text.indexOf('{');
+  if (firstBrace !== -1) {
+    text = text.slice(firstBrace);
+    const lastBrace = text.lastIndexOf('}');
+    if (lastBrace !== -1) text = text.slice(0, lastBrace + 1);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    const repaired = repairTruncatedJson(text, defaults);
+    if (repaired) {
+      try {
+        return JSON.parse(repaired);
+      } catch (_) {}
+    }
+    console.error('[GEMINI] Invalid JSON from model (first 300 chars):', text.slice(0, 300));
+    throw new Error('Gemini returned invalid JSON. Try again or rephrase your action.');
+  }
+}
+
+/**
+ * If the model output was truncated (e.g. mid-string), close the string and add missing keys.
+ * @param {string} text - Truncated JSON string
+ * @param {object} [defaults] - Default key-value pairs to append when repairing
+ * @returns {string|null} Repaired JSON string, or null if unrecoverable
+ */
+function repairTruncatedJson(text, defaults) {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{')) return null;
+  let out = trimmed;
+  if (!out.endsWith('}')) {
+    if (!out.trimEnd().endsWith('"')) out += '"';
+    if (defaults) {
+      const pairs = Object.entries(defaults)
+        .map(([k, v]) => `"${k}": ${JSON.stringify(v)}`)
+        .join(', ');
+      out += (out.trimEnd().endsWith(',') ? ' ' : ', ') + pairs;
+    }
+    out += '}';
+  }
+  return out;
+}

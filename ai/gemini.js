@@ -4,6 +4,8 @@
 // and generates prompts for image + music systems.
 // ═══════════════════════════════════════════════
 
+import { parseGeminiJson } from './parse_json.js';
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
@@ -33,14 +35,16 @@ You must respond with ONLY valid JSON in this exact format (no markdown, no code
  * @param {string} playerAction - What the player said/did
  * @param {number|null} diceRoll - d20 result (1-20) or null if no roll
  * @param {object} campaign - Full campaign history object
+ * @param {Array<{label: string, appearance: object}>} [sessionProfiles] - Vision-extracted character appearances
  * @returns {object} { narration, scene_prompt, music_mood, characters_mentioned, location }
  */
-export async function generateStoryBeat(playerAction, diceRoll, campaign) {
-  // Build context from campaign history
+export async function generateStoryBeat(playerAction, diceRoll, campaign, sessionProfiles) {
   const historyContext = buildHistoryContext(campaign);
+  const appearanceContext = buildAppearanceContext(sessionProfiles);
 
   const userPrompt = [
     historyContext,
+    appearanceContext,
     '',
     `PLAYER ACTION: "${playerAction}"`,
     diceRoll !== null ? `DICE ROLL (d20): ${diceRoll}` : 'NO DICE ROLL',
@@ -70,7 +74,7 @@ export async function generateStoryBeat(playerAction, diceRoll, campaign) {
       const data = await res.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (text) {
-        const parsed = parseGeminiJson(text);
+        const parsed = parseGeminiJson(text, STORY_BEAT_DEFAULTS);
         if (parsed) return parsed;
       }
       const errMsg = data.error?.message || data.message || res.statusText || 'Unknown error';
@@ -83,50 +87,12 @@ export async function generateStoryBeat(playerAction, diceRoll, campaign) {
     }
 }
 
-/**
- * Parse Gemini's JSON response. Handles markdown code fences, trailing text, and truncated output.
- */
-function parseGeminiJson(raw) {
-  let text = (raw || '').trim();
-  const codeBlock = /^```(?:json)?\s*([\s\S]*?)```\s*$/;
-  const m = text.match(codeBlock);
-  if (m) text = m[1].trim();
-  const firstBrace = text.indexOf('{');
-  if (firstBrace !== -1) {
-    text = text.slice(firstBrace);
-    const lastBrace = text.lastIndexOf('}');
-    if (lastBrace !== -1) text = text.slice(0, lastBrace + 1);
-  }
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    if (!(e instanceof SyntaxError)) throw e;
-    const repaired = repairTruncatedJson(text);
-    if (repaired) {
-      try {
-        return JSON.parse(repaired);
-      } catch (_) {}
-    }
-    console.error('[GEMINI] Invalid JSON from model (first 300 chars):', text.slice(0, 300));
-    throw new Error('Gemini returned invalid JSON. Try again or rephrase your action.');
-  }
-}
-
-/**
- * If the model output was truncated (e.g. mid-string), close the string and add missing keys.
- * When we don't end with `}`, we assume we're truncated; if the text doesn't end with `"`, close the open string first.
- */
-function repairTruncatedJson(text) {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith('{')) return null;
-  let out = trimmed;
-  if (!out.endsWith('}')) {
-    if (!out.trimEnd().endsWith('"')) out += '"';
-    const defaults = ', "scene_prompt": "fantasy illustration, dramatic lighting, oil painting style", "music_mood": "calm", "characters_mentioned": [], "location": "Unknown"';
-    out += (out.trimEnd().endsWith(',') ? '' : defaults) + '}';
-  }
-  return out;
-}
+const STORY_BEAT_DEFAULTS = {
+  scene_prompt: 'fantasy illustration, dramatic lighting, oil painting style',
+  music_mood: 'calm',
+  characters_mentioned: [],
+  location: 'Unknown',
+};
 
 function buildHistoryContext(campaign) {
   const lines = ['CAMPAIGN HISTORY:'];
@@ -139,7 +105,6 @@ function buildHistoryContext(campaign) {
     lines.push(`Known locations: ${campaign.locations.join(', ')}`);
   }
 
-  // Include last 8 events for context window efficiency
   const recentEvents = campaign.events.slice(-8);
   if (recentEvents.length > 0) {
     lines.push('', 'RECENT EVENTS:');
@@ -152,5 +117,27 @@ function buildHistoryContext(campaign) {
     lines.push('', 'This is the OPENING SCENE. Set the stage for an epic adventure in a dark fantasy tavern.');
   }
 
+  return lines.join('\n');
+}
+
+/**
+ * Build a prompt section describing real character appearances from camera analysis.
+ * Returns empty string if no profiles are available.
+ * @param {Array<{label: string, appearance: object}>} [profiles]
+ * @returns {string}
+ */
+function buildAppearanceContext(profiles) {
+  if (!profiles || profiles.length === 0) return '';
+
+  const lines = ['', 'CHARACTER APPEARANCES (from camera):'];
+  for (const { label, appearance } of profiles) {
+    const parts = [label];
+    if (appearance.hair) parts.push(`hair: ${appearance.hair}`);
+    if (appearance.clothing) parts.push(`clothing: ${appearance.clothing}`);
+    if (appearance.features) parts.push(`features: ${appearance.features}`);
+    if (appearance.age_range) parts.push(`age: ${appearance.age_range}`);
+    lines.push(`- ${parts.join(', ')}`);
+  }
+  lines.push('Include these appearance details in the scene_prompt so generated images match the real people.');
   return lines.join('\n');
 }

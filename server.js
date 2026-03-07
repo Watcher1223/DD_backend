@@ -11,6 +11,7 @@ import { WebSocketServer } from 'ws';
 import http from 'http';
 import gameRoutes from './routes/game.js';
 import audioRoutes from './routes/audio.js';
+import cameraRoutes from './routes/camera.js';
 import { initDb } from './db/index.js';
 
 const PORT = parseInt(process.env.PORT || '4300', 10);
@@ -52,6 +53,7 @@ app.locals.broadcast = (message) => {
 
 // ── Routes ──
 app.use('/api', audioRoutes);
+app.use('/api', cameraRoutes);
 app.use('/api', gameRoutes);
 
 // ── Root ──
@@ -63,6 +65,8 @@ app.get('/', (req, res) => {
     endpoints: {
       action: 'POST /api/action',
       dice: 'POST /api/dice',
+      cameraAnalyze: 'POST /api/camera/analyze (character vision)',
+      cameraProfiles: 'GET /api/camera/profiles (stored profiles)',
       campaign: 'GET /api/campaign',
       campaigns: 'GET /api/campaigns, POST /api/campaigns',
       reset: 'POST /api/campaign/reset',

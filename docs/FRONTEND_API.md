@@ -26,6 +26,7 @@ Before or after loading the app, call the health endpoint to know what’s live 
   "service": "living-worlds",
   "campaign_events": 0,
   "has_gemini": true,
+  "has_vision": true,
   "has_nanobanana": true,
   "has_lyria": true
 }
@@ -36,6 +37,7 @@ Before or after loading the app, call the health endpoint to know what’s live 
 | `status` | string | Always `"ok"` when the server is up. |
 | `campaign_events` | number | Event count for the default campaign (persisted in DB). |
 | `has_gemini` | boolean | `true` = Gemini configured for story. `false` = action will return 503 until GEMINI_API_KEY is set. |
+| `has_vision` | boolean | `true` = Camera character analysis available (uses same Gemini key). `false` = camera endpoints will return 503. |
 | `has_nanobanana` | boolean | `true` = NanoBanana or Vertex Imagen available for images. `false` = action will fail for image until configured. |
 | `has_lyria` | boolean | `true` = Vertex Lyria 2 available for music. `false` = music will return 502 until GOOGLE_CLOUD_PROJECT + billing. |
 
@@ -259,6 +261,110 @@ All audio URLs from the backend are **same-origin** (or data URLs), so playback 
 
 ---
 
+## Camera & character vision
+
+The camera pipeline lets the frontend capture webcam frames, send them to the backend for Gemini Vision analysis, and store character appearance profiles. These profiles are automatically injected into the story engine's `scene_prompt` so generated images reflect the real people.
+
+### Recommended frontend flow
+
+1. Start camera via `navigator.mediaDevices.getUserMedia({ video: true })`
+2. Capture a frame to a canvas and export as base64: `canvas.toDataURL("image/jpeg")`
+3. Send to `POST /api/camera/analyze`
+4. Display returned character profiles to the user ("Gemini sees: child with brown hair...")
+5. Begin story generation via `POST /api/action` — profiles are automatically included
+
+### `POST /api/camera/analyze`
+
+Analyze a webcam frame to identify people and extract appearance descriptions. Results are persisted per campaign so subsequent story beats include the character appearances.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `frame` | string | ✓ | Base64-encoded JPEG/PNG image from the webcam. |
+| `campaignId` | number | | Campaign ID. Omit to use the default campaign. |
+
+**Response (200):**
+
+```json
+{
+  "people": [
+    {
+      "label": "child",
+      "hair": "brown, curly",
+      "clothing": "blue pajamas",
+      "features": "freckles, smiling",
+      "age_range": "5-7"
+    },
+    {
+      "label": "adult",
+      "hair": "dark, short",
+      "clothing": "gray sweater",
+      "features": "glasses, beard",
+      "age_range": "30-35"
+    }
+  ],
+  "setting": "bedroom, dim lighting",
+  "stored": 2,
+  "elapsed_ms": 1200
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `people` | array | Detected people with appearance descriptions. |
+| `people[].label` | string | Role label: `"child"`, `"adult"`, `"child_1"`, etc. |
+| `people[].hair` | string | Hair color, length, and style. |
+| `people[].clothing` | string | Visible clothing description. |
+| `people[].features` | string | Distinguishing features (glasses, freckles, etc). |
+| `people[].age_range` | string | Estimated age range (e.g. `"5-7"`). |
+| `setting` | string | Brief description of the visible environment. |
+| `stored` | number | How many profiles were saved to the session. |
+| `elapsed_ms` | number | Server-side latency in ms. |
+
+**Errors:**
+
+- `400` — `frame` missing: `{ "error": "frame is required (base64 encoded image)" }`
+- `404` — Invalid campaign: `{ "error": "Campaign not found" }`
+- `500` — Analysis failure: `{ "error": "Character analysis failed", "details": "..." }`
+- `503` — Gemini API key not configured.
+
+### `GET /api/camera/profiles`
+
+Return stored character profiles for a campaign.
+
+**Query params (optional):** `campaignId` (number).
+
+**Response (200):**
+
+```json
+{
+  "profiles": [
+    {
+      "label": "child",
+      "appearance": {
+        "label": "child",
+        "hair": "brown, curly",
+        "clothing": "blue pajamas",
+        "features": "freckles, smiling",
+        "age_range": "5-7"
+      },
+      "updated_at": 1709765432000
+    }
+  ]
+}
+```
+
+**Frontend recommendations:**
+
+- Call `POST /api/camera/analyze` once before starting the story (or periodically to update appearances).
+- You do NOT need to send frames continuously; one frame every few seconds is sufficient.
+- Profiles persist across requests — once analyzed, every `POST /api/action` automatically includes character appearances in the scene prompt.
+- Use `GET /api/camera/profiles` to restore/display saved profiles on page reload.
+- Campaign reset (`POST /api/campaign/reset`) clears profiles along with all other campaign data.
+
+---
+
 ## Other endpoints
 
 ### `GET /api/moods`
@@ -314,12 +420,14 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 
 ## Design checklist for real data
 
-- [ ] Call `GET /api/health` on load and use `has_gemini`, `has_nanobanana`, `has_lyria` to adapt UI (labels, disabled features, or “demo mode”).
+- [ ] Call `GET /api/health` on load and use `has_gemini`, `has_vision`, `has_nanobanana`, `has_lyria` to adapt UI (labels, disabled features, or “demo mode”).
+- [ ] If `has_vision` is true, offer camera capture for character analysis before starting the story.
 - [ ] Show loading state for `POST /api/action` (2–5+ seconds typical).
 - [ ] Display `narration` and play `narrationAudioUrl` for voice when desired.
 - [ ] Use `image.imageUrl` for the scene image.
 - [ ] Use `music.audioUrl` for background music (same-origin); handle Lyria’s first-load delay (e.g. keep previous track or show “Loading music…”).
 - [ ] On load, call `GET /api/campaign` to show event count, recent events, locations, and characters (persisted).
+- [ ] On load, call `GET /api/camera/profiles` to restore any previously captured character profiles.
 - [ ] Support optional `campaignId` in action and campaign endpoints if you add multi-campaign UI.
 - [ ] Handle 400/404/500 with user-friendly messages.
 - [ ] Optionally connect to the WebSocket and handle `type: "story_update"` for real-time story updates.
@@ -332,6 +440,8 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 |--------|------|--------|
 | GET | `/api/health` | Status and real-data flags |
 | POST | `/api/action` | Send action, get narration + image + music |
+| POST | `/api/camera/analyze` | Analyze webcam frame for character appearances |
+| GET | `/api/camera/profiles` | Get stored character profiles |
 | GET | `/api/campaign` | Get campaign state (persisted) |
 | POST | `/api/campaign/reset` | Reset campaign |
 | GET | `/api/campaigns` | List campaigns |

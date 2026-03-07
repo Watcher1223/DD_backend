@@ -19,6 +19,7 @@ import {
   campaignExists,
   listCampaigns,
   createCampaign,
+  getSessionProfiles,
 } from '../db/index.js';
 
 const router = Router();
@@ -63,7 +64,8 @@ router.post('/action', async (req, res) => {
     }
 
     // Step 2: Generate story beat with Gemini (includes narration + prompts)
-    const storyBeat = await generateStoryBeat(action, resolvedDice, campaign);
+    const sessionProfiles = getSessionProfiles(campaignId);
+    const storyBeat = await generateStoryBeat(action, resolvedDice, campaign, sessionProfiles);
 
     // Step 3 & 4: Generate image and music IN PARALLEL for speed
     const [imageResult, musicResult] = await Promise.all([
@@ -190,6 +192,7 @@ router.get('/health', (req, res) => {
     service: 'living-worlds',
     campaign_events: getEventCount(defaultId),
     has_gemini: !!process.env.GEMINI_API_KEY,
+    has_vision: !!process.env.GEMINI_API_KEY,
     has_nanobanana: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.NANOBANANA_API_KEY),
     has_lyria: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.LYRIA_API_KEY),
   });
