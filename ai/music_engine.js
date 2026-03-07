@@ -5,6 +5,18 @@
 
 const DELTA_THRESHOLD = 0.15;
 
+/** Theme keys supported for music (user description is mapped to one of these). */
+export const THEME_KEYS = [
+  'bedtime',
+  'calm',
+  'magical forest',
+  'under the sea',
+  'fairy tale',
+  'space adventure',
+  'fantasy',
+  'dragon adventure',
+];
+
 const THEME_MAP = {
   'magical forest': [
     'soft harp fantasy ambience',

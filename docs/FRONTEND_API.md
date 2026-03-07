@@ -2,6 +2,8 @@
 
 Backend API and real-data contract for the Living Worlds AI Dungeon Master frontend. The backend uses **real data**: persisted campaign state (SQLite), Gemini (story), NanoBanana 2 or Vertex Imagen (images), and Vertex Lyria 2 or presets (music).
 
+**Frontend integration guide (order of operations, code examples):** see **[FRONTEND.md](./FRONTEND.md)**.
+
 ---
 
 ## Base URL & environment
@@ -387,21 +389,40 @@ Returns narration as speech audio. Used for `narrationAudioUrl`; the frontend ju
 
 ### `GET /api/music/generate?mood=<mood>`
 
-Returns Lyria 2 WAV stream when Lyria is configured. Used for `music.audioUrl` when `music.source === "lyria"`.
+Returns Lyria 2 WAV stream when Lyria is configured. Used for `music.audioUrl` when `music.source === "lyria"`. Frontend can use for a “test music” or one-shot playback.
+
+**Response (200):** Binary WAV body; `Content-Type: audio/wav`.
+
+**Response (502):** JSON body when Lyria fails (e.g. recitation block, config, or billing):
+
+```json
+{
+  "error": "Music generation failed",
+  "details": "Vertex Lyria returned no audio (e.g. recitation block). Set GOOGLE_CLOUD_PROJECT and try a different mood or LYRIA_PROMPT_OVERRIDE."
+}
+```
+
+Use `fetch()` and parse JSON on non-OK to show `details` to the user.
 
 ---
 
 ## Bedtime story mode
 
-Bedtime story uses **Lyria RealTime** (Gemini API `lyria-realtime-exp`) for **continuous** adaptive music. Music never stops; it only changes when theme/mood/intensity signals are sent via `POST /api/music/update`. Start a session with `POST /api/story/start`, then receive raw PCM audio over the WebSocket by subscribing to the `story_audio` channel.
+Bedtime story uses **Lyria RealTime** (Gemini API `lyria-realtime-exp`) for **continuous** adaptive music. **Theme** comes from the **user’s voice or text description** (e.g. “bedtime story in the forest”); the server extracts a theme key and uses it for music. **Emotion/mood/intensity** can come from the camera (Gemini Vision) or from presets. Start a session with `POST /api/story/start`, then receive raw PCM audio over the WebSocket by subscribing to the `story_audio` channel.
 
 ### `POST /api/story/start`
 
 Starts a Lyria RealTime session: opens WebSocket to the music model, sets initial lullaby-style prompts, and begins streaming. Audio is sent to all WebSocket clients that have subscribed to `story_audio`.
 
-**Response (200):** `{ "ok": true, "message": "Bedtime story session started" }`
+**Request body (optional):** `{ "themeDescription": "string" }` — User’s voice or text (e.g. “bedtime story in the forest”, “under the sea”). Server uses Gemini to extract a theme key and applies it to music.
+
+**Response (200):** `{ "ok": true, "message": "Bedtime story session started", "userTheme": "magical forest" }` — `userTheme` is present when `themeDescription` was sent and extraction succeeded.
 
 **Errors:** `503` — Lyria RealTime failed (e.g. missing `GEMINI_API_KEY` or quota).
+
+### `POST /api/story/set-theme`
+
+Set the story theme from the user’s voice or text description. If a story session is active, music is updated to match. **Request body:** `{ "themeDescription": "string" }` (required). **Response (200):** `{ "ok": true, "userTheme": "magical forest" }`. **Errors:** `400` — Missing `themeDescription`. `503` — Theme extraction failed.
 
 ### `POST /api/music/update`
 
@@ -419,15 +440,68 @@ Ends the bedtime story session and closes the Lyria RealTime WebSocket. **Respon
 
 ### `GET /api/story/status`
 
-**Response (200):** `{ "active": true }` or `{ "active": false }`
+**Response (200):** `{ "active": true, "userTheme": "magical forest" }` or `{ "active": false, "userTheme": null }`. `userTheme` is the theme extracted from the user’s description (set at start or via `POST /api/story/set-theme`).
+
+### `GET /api/story/debug`
+
+Returns Lyria chunk count and session state (for debugging no-audio). **Response (200):** `{ "lyriaChunksReceived": N, "sessionActive": true }` (or `false`).
 
 ### `POST /api/story/beat`
 
 Bedtime story beat: Gemini generates narration + theme/mood/emotion; state is persisted; if a story session is active, music prompts are updated. **Body:** `{ "action": "string" }` (required), optional `campaignId`. **Response:** `narration`, `scene_prompt`, `theme`, `mood`, `intensity`, `emotion`, `location`, `event_number`.
 
+### `POST /api/story/emotion-from-camera`
+
+Send a webcam frame; **Gemini Vision** infers **emotion, mood, and intensity** from face and posture (theme comes from the user’s description, not the image). When a story session is active and `updateMusic` is true, the backend updates Lyria using the session’s **userTheme** + camera-derived emotion/mood/intensity.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `frame` | string | ✓ | Base64-encoded image (JPEG/PNG) or data URL from webcam. |
+| `updateMusic` | boolean | | If `true` and a story session is active, applies session theme + detected emotion/mood/intensity to Lyria (same throttling as `POST /api/music/update`). Default: false. |
+
+**Response (200):**
+
+```json
+{
+  "emotion": "calm",
+  "mood": "peaceful",
+  "theme": "magical forest",
+  "intensity": 0.3,
+  "musicUpdated": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `emotion` | string | One of: sleepy, happy, excited, sad, neutral, calm, scared, curious, peaceful. |
+| `mood` | string | One of: calm, peaceful, sleepy, gentle, dreamy, tense, sad, happy. |
+| `theme` | string | Session’s user theme (from user description at start or set-theme), or `"bedtime"` if none set. |
+| `intensity` | number | 0–1 (from camera). |
+| `musicUpdated` | boolean | `true` if Lyria was updated this request (throttling may skip updates). |
+
+**Errors:**
+
+- `400` — Missing `frame`: `{ "error": "frame is required (base64 encoded image)" }`
+- `503` — Gemini not configured or vision failed: `{ "error": "Emotion analysis failed", "details": "..." }`
+
+**Frontend flow:** Set theme from user voice/text via `POST /api/story/start` (body: `themeDescription`) or `POST /api/story/set-theme`. Start story session → (optional) get user media → every 3–4 s capture frame → POST to emotion-from-camera with `updateMusic: true` → show `emotion` / `theme` / `musicUpdated` in UI.
+
 ### WebSocket: story audio
 
-Subscribe by sending `{ "type": "subscribe", "channel": "story_audio" }`. Server sends `{ "type": "audio_chunk", "payload": "<base64 PCM>", "sampleRate": 48000, "channels": 2 }` and optionally `{ "type": "music_session_ended" }`. Decode payload as 16-bit PCM, 48 kHz stereo; play via Web Audio API.
+Subscribe by sending **once the socket is open** (and again before start if reusing a connection):
+
+```json
+{ "type": "subscribe", "channel": "story_audio" }
+```
+
+The server accepts both string and Buffer WebSocket frames. After subscribing, wait ~500 ms then call `POST /api/story/start` so the server has at least one subscriber before starting Lyria.
+
+**Messages from server:**
+
+- **`audio_chunk`** — `{ "type": "audio_chunk", "payload": "<base64 PCM>", "sampleRate": 48000, "channels": 2 }`. Decode payload as 16-bit PCM, 48 kHz stereo; play via Web Audio API (queue chunks to avoid gaps).
+- **`music_session_ended`** — `{ "type": "music_session_ended" }` when the session has stopped.
 
 ---
 
@@ -471,6 +545,7 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 - [ ] Support optional `campaignId` in action and campaign endpoints if you add multi-campaign UI.
 - [ ] Handle 400/404/500 with user-friendly messages.
 - [ ] Optionally connect to the WebSocket and handle `type: "story_update"` for real-time story updates.
+- [ ] **Bedtime story:** Subscribe to `story_audio` **before** calling `POST /api/story/start`; decode `audio_chunk.payload` (base64 → Int16, 48 kHz stereo) and play with Web Audio API. See [FRONTEND.md](./FRONTEND.md) for integration steps.
 
 ---
 
@@ -493,7 +568,10 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 | GET | `/api/music/generate?mood=...` | Lyria 2 music stream (used by backend) |
 | POST | `/api/story/start` | Start bedtime story Lyria RealTime session |
 | POST | `/api/story/stop` | Stop story session |
-| GET | `/api/story/status` | Whether story session is active |
+| GET | `/api/story/status` | Whether story session is active + userTheme |
+| GET | `/api/story/debug` | Lyria chunk count + session active (debug) |
+| POST | `/api/story/set-theme` | Set theme from user voice/text description |
+| POST | `/api/story/emotion-from-camera` | Camera frame → Gemini emotion/mood/intensity; theme from session |
 | POST | `/api/music/update` | Update theme/mood for adaptive music (story session) |
 | POST | `/api/story/beat` | Bedtime story beat (Gemini + optional music update) |
 | WS | `/` | Real-time `story_update` broadcasts; subscribe `story_audio` for PCM |

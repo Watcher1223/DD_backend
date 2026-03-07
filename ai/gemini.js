@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════
 
 import { parseGeminiJson } from './parse_json.js';
+import { THEME_KEYS } from './music_engine.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
@@ -52,6 +53,68 @@ You must respond with ONLY valid JSON in this exact format (no markdown, no code
   "characters_mentioned": ["list", "of", "character", "names"],
   "location": "current location name"
 }`;
+
+/** Extract a single theme key from the user's spoken or typed description (e.g. "bedtime story in the forest" → "magical forest"). */
+const THEME_EXTRACT_PROMPT = `The user will give a short description of the setting or theme they want for a bedtime story (e.g. "story in the forest", "under the sea", "space adventure").
+Pick the ONE theme that best matches their description from this exact list (return only the theme string, no explanation):
+${THEME_KEYS.map((t) => `- ${t}`).join('\n')}
+
+Respond with ONLY valid JSON: { "theme": "<exactly one of the list above>" }
+If unclear or generic (e.g. "a story"), use "bedtime".`;
+
+/**
+ * Extract theme key from user's voice or text description (e.g. "bedtime story with a theme in the forest" → "magical forest").
+ * @param {string} description - User's phrase (transcribed from voice or typed)
+ * @returns {Promise<string>} One of THEME_KEYS
+ */
+export async function extractThemeFromDescription(description) {
+  if (!description || typeof description !== 'string') return 'bedtime';
+  const trimmed = description.trim();
+  if (!trimmed) return 'bedtime';
+
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
+    return normalizeThemeFallback(trimmed);
+  }
+
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: THEME_EXTRACT_PROMPT + '\n\nUser said: "' + trimmed + '"' }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 64,
+          responseMimeType: 'application/json',
+        },
+      }),
+    });
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (text) {
+      const parsed = parseGeminiJson(text);
+      const theme = parsed?.theme && typeof parsed.theme === 'string' ? parsed.theme.trim().toLowerCase() : '';
+      const matched = THEME_KEYS.find((k) => k.toLowerCase() === theme);
+      if (matched) return matched;
+      return normalizeThemeFallback(theme || trimmed);
+    }
+  } catch (err) {
+    console.warn('[GEMINI] Theme extract failed:', err.message);
+  }
+  return normalizeThemeFallback(trimmed);
+}
+
+function normalizeThemeFallback(text) {
+  const v = (text && String(text).toLowerCase()) || '';
+  if (/forest|wood|tree|jungle/.test(v)) return 'magical forest';
+  if (/sea|ocean|underwater|fish/.test(v)) return 'under the sea';
+  if (/space|cosmic|star|moon|planet/.test(v)) return 'space adventure';
+  if (/fairy|magic|enchanted/.test(v)) return 'fairy tale';
+  if (/dragon|adventure|quest/.test(v)) return 'dragon adventure';
+  if (/calm|peace|gentle/.test(v)) return 'calm';
+  if (/fantasy/.test(v)) return 'fantasy';
+  return 'bedtime';
+}
 
 /**
  * Generate a bedtime story beat (narration + theme signals for adaptive music).

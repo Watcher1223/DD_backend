@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import { createLyriaRealtimeSession } from '../ai/lyria_realtime.js';
-import { generateBedtimeStoryBeat } from '../ai/gemini.js';
+import { generateBedtimeStoryBeat, extractThemeFromDescription } from '../ai/gemini.js';
 import {
   generateMusicPrompts,
   shouldUpdatePrompts,
@@ -13,6 +13,7 @@ import {
   resetThrottle,
   DEFAULT_WEIGHTED_PROMPTS,
 } from '../ai/music_engine.js';
+import { analyzeEmotionFromFrame } from '../vision/emotion_analysis.js';
 import {
   getCampaign,
   getOrCreateDefaultCampaign,
@@ -30,6 +31,7 @@ let activeStorySession = null;
 /**
  * POST /api/story/start
  * Start a bedtime story session: wait for at least one subscriber, then open Lyria RealTime and start play.
+ * Body: { themeDescription?: string } — user's voice/text (e.g. "bedtime story in the forest"); theme is extracted and used for music.
  */
 router.post('/story/start', async (req, res) => {
   if (activeStorySession) {
@@ -79,11 +81,21 @@ router.post('/story/start', async (req, res) => {
     handle.setMusicGenerationConfig({ bpm: 70, density: 0.5 });
     handle.play();
 
-    activeStorySession = { handle };
+    let userTheme = null;
+    const themeDescription = req.body?.themeDescription;
+    if (themeDescription && typeof themeDescription === 'string') {
+      userTheme = await extractThemeFromDescription(themeDescription);
+      const scene = { theme: userTheme, mood: 'calm', intensity: 0.3, emotion: 'neutral' };
+      const { weightedPrompts, theme, mood, intensity } = generateMusicPrompts(scene);
+      await handle.updatePrompts(weightedPrompts);
+      markPromptsApplied({ theme, mood, intensity });
+    }
+
+    activeStorySession = { handle, userTheme };
     resetThrottle();
     req.app.locals._lyriaChunkCount = 0;
 
-    res.json({ ok: true, message: 'Bedtime story session started' });
+    res.json({ ok: true, message: 'Bedtime story session started', userTheme: userTheme ?? undefined });
   } catch (err) {
     console.error('[STORY] Start failed:', err.message);
     res.status(503).json({
@@ -133,6 +145,82 @@ router.post('/music/update', (req, res) => {
 });
 
 /**
+ * POST /api/story/emotion-from-camera
+ * Send a webcam frame; Gemini Vision infers emotion/mood/intensity (theme comes from user description via start or set-theme).
+ * If updateMusic is true and a story session is active, updates Lyria using session's userTheme + camera emotion.
+ * Body: { frame: string (base64), updateMusic?: boolean }
+ */
+router.post('/story/emotion-from-camera', async (req, res) => {
+  const { frame, updateMusic } = req.body || {};
+  if (!frame || typeof frame !== 'string') {
+    return res.status(400).json({ error: 'frame is required (base64 encoded image)' });
+  }
+
+  try {
+    const signals = await analyzeEmotionFromFrame(frame);
+    const theme = activeStorySession?.userTheme || 'bedtime';
+    let musicUpdated = false;
+
+    if (updateMusic && activeStorySession) {
+      const scene = {
+        theme,
+        mood: signals.mood,
+        intensity: signals.intensity,
+        emotion: signals.emotion,
+      };
+      const { weightedPrompts, theme: t, mood, intensity } = generateMusicPrompts(scene);
+      if (shouldUpdatePrompts({ theme: t, mood, intensity })) {
+        await activeStorySession.handle.updatePrompts(weightedPrompts);
+        markPromptsApplied({ theme: t, mood, intensity });
+        musicUpdated = true;
+      }
+    }
+
+    res.json({
+      emotion: signals.emotion,
+      mood: signals.mood,
+      theme,
+      intensity: signals.intensity,
+      musicUpdated,
+    });
+  } catch (err) {
+    console.error('[STORY] Emotion-from-camera failed:', err.message);
+    const status = err.message?.includes('required') || err.message?.includes('Gemini') ? 503 : 500;
+    res.status(status).json({
+      error: 'Emotion analysis failed',
+      details: err.message,
+    });
+  }
+});
+
+/**
+ * POST /api/story/set-theme
+ * Set the story theme from the user's voice or text description (e.g. "under the sea", "story in the forest").
+ * If a story session is active, music is updated to match. Body: { themeDescription: string }
+ */
+router.post('/story/set-theme', async (req, res) => {
+  const themeDescription = req.body?.themeDescription;
+  if (!themeDescription || typeof themeDescription !== 'string') {
+    return res.status(400).json({ error: 'themeDescription is required' });
+  }
+
+  try {
+    const userTheme = await extractThemeFromDescription(themeDescription);
+    if (activeStorySession) {
+      activeStorySession.userTheme = userTheme;
+      const scene = { theme: userTheme, mood: 'calm', intensity: 0.3, emotion: 'neutral' };
+      const { weightedPrompts, theme, mood, intensity } = generateMusicPrompts(scene);
+      await activeStorySession.handle.updatePrompts(weightedPrompts);
+      markPromptsApplied({ theme, mood, intensity });
+    }
+    res.json({ ok: true, userTheme });
+  } catch (err) {
+    console.error('[STORY] Set-theme failed:', err.message);
+    res.status(503).json({ error: 'Failed to set theme', details: err.message });
+  }
+});
+
+/**
  * POST /api/story/stop
  * End the bedtime story session and close Lyria RealTime.
  */
@@ -156,10 +244,13 @@ router.post('/story/stop', (req, res) => {
 
 /**
  * GET /api/story/status
- * Return whether a story session is active (for frontend).
+ * Return whether a story session is active and the current user-set theme (from voice/text description).
  */
 router.get('/story/status', (req, res) => {
-  res.json({ active: !!activeStorySession });
+  res.json({
+    active: !!activeStorySession,
+    userTheme: activeStorySession?.userTheme ?? null,
+  });
 });
 
 /**

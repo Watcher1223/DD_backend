@@ -34,11 +34,18 @@
 
   <section>
     <h2>Session</h2>
+    <p class="sub">Theme comes from your description (say or type it, e.g. “bedtime story in the forest”, “under the sea”).</p>
+    <div style="margin-bottom:0.5rem;">
+      <label for="themeDescription" style="font-size:0.85rem;">Theme / setting (voice or text)</label>
+      <input type="text" id="themeDescription" placeholder="e.g. bedtime story in the forest, under the sea" style="width:100%; padding:0.5rem; margin-top:0.25rem; border-radius:6px; border:1px solid #ccc;" />
+    </div>
     <div class="row">
       <button id="btnTestMusic">Play test music (batch Lyria)</button>
       <button id="btnStart">Start story session</button>
       <button id="btnStop" class="danger" disabled>Stop session</button>
+      <button id="btnSetTheme" class="mood" disabled>Set theme</button>
     </div>
+    <div id="themeStatus" class="current" style="font-size:0.8rem; margin-top:0.25rem;"></div>
     <p class="sub" style="margin-top:0.25rem;">Use “Play test music” first to confirm your speakers work (plays a short calm WAV from the server).</p>
   </section>
 
@@ -47,6 +54,18 @@
     <p class="sub">Click a preset to send POST /api/music/update. Music should transition within ~2 seconds.</p>
     <div class="row" id="presets"></div>
     <div id="current" class="current"></div>
+  </section>
+
+  <section>
+    <h2>Camera → emotion (Gemini Vision)</h2>
+    <p class="sub">When the session is running, enable the camera so Gemini can read your expression and adjust the music.</p>
+    <div class="row">
+      <label><input type="checkbox" id="useCamera" /> Drive music from my expression</label>
+    </div>
+    <div id="cameraWrap" style="display:none; margin-top:0.5rem;">
+      <video id="cameraVideo" autoplay playsinline muted style="width:160px; height:120px; background:#111; border-radius:6px;"></video>
+      <div id="emotionResult" class="current" style="margin-top:0.25rem; font-size:0.8rem;"></div>
+    </div>
   </section>
 
   <div id="status" class="status">Start the session and subscribe to hear audio. Use a browser that supports Web Audio.</div>
@@ -78,6 +97,13 @@
     const presetsEl = document.getElementById('presets');
     const serverChunksEl = document.getElementById('serverChunks');
     const planarCheckbox = document.getElementById('planarPCM');
+    const useCameraCheckbox = document.getElementById('useCamera');
+    const cameraWrap = document.getElementById('cameraWrap');
+    const cameraVideo = document.getElementById('cameraVideo');
+    const emotionResultEl = document.getElementById('emotionResult');
+    const themeDescriptionEl = document.getElementById('themeDescription');
+    const themeStatusEl = document.getElementById('themeStatus');
+    const btnSetTheme = document.getElementById('btnSetTheme');
 
     let ws = null;
     let audioContext = null;
@@ -85,6 +111,8 @@
     let sessionActive = false;
     let chunksReceived = 0;
     let nextStartTime = 0;
+    let cameraStream = null;
+    let emotionIntervalId = null;
 
     function setStatus(msg, type = '') {
       statusEl.textContent = msg;
@@ -207,6 +235,9 @@
               sessionActive = false;
               btnStart.disabled = false;
               btnStop.disabled = true;
+              btnSetTheme.disabled = true;
+              themeStatusEl.textContent = '';
+              stopCameraEmotionLoop();
             }
           } catch (e) {
             console.warn('WS message parse error', e);
@@ -242,7 +273,13 @@
         ensureSubscribed();
         // Give the server a moment to process the subscribe message before we start Lyria
         await new Promise((r) => setTimeout(r, 500));
-        const res = await fetch(API + '/api/story/start', { method: 'POST' });
+        const themeDescription = themeDescriptionEl.value.trim();
+        const body = themeDescription ? JSON.stringify({ themeDescription }) : undefined;
+        const res = await fetch(API + '/api/story/start', {
+          method: 'POST',
+          headers: body ? { 'Content-Type': 'application/json' } : {},
+          body,
+        });
         const data = await res.json();
         if (!res.ok) {
           setStatus('Start failed: ' + (data.details || data.error || res.status), 'error');
@@ -251,7 +288,10 @@
         }
         sessionActive = true;
         btnStop.disabled = false;
+        btnSetTheme.disabled = false;
+        if (data.userTheme) themeStatusEl.textContent = 'Theme: ' + data.userTheme;
         setStatus('Session started. Waiting for Lyria audio chunks…', 'playing');
+        if (useCameraCheckbox.checked) startCameraEmotionLoop();
       } catch (e) {
         setStatus('Request failed: ' + e.message, 'error');
         btnStart.disabled = false;
@@ -261,22 +301,115 @@
     setInterval(async () => {
       if (!sessionActive) { serverChunksEl.textContent = ''; return; }
       try {
-        const r = await fetch(API + '/api/story/debug');
+        const [r, statusRes] = await Promise.all([
+          fetch(API + '/api/story/debug'),
+          fetch(API + '/api/story/status'),
+        ]);
         const d = await r.json();
+        const statusData = await statusRes.json();
         serverChunksEl.textContent = d.sessionActive ? 'Server received ' + (d.lyriaChunksReceived || 0) + ' chunks from Lyria' : '';
+        if (statusData.userTheme && !themeStatusEl.textContent) themeStatusEl.textContent = 'Theme: ' + statusData.userTheme;
       } catch (_) {}
     }, 2000);
 
     btnStop.addEventListener('click', async () => {
+      stopCameraEmotionLoop();
       try {
         await fetch(API + '/api/story/stop', { method: 'POST' });
         sessionActive = false;
         btnStart.disabled = false;
         btnStop.disabled = true;
+        btnSetTheme.disabled = true;
         setCurrent('');
+        themeStatusEl.textContent = '';
         setStatus('Session stopped.');
       } catch (e) {
         setStatus('Stop failed: ' + e.message, 'error');
+      }
+    });
+
+    function stopCameraEmotionLoop() {
+      if (emotionIntervalId) {
+        clearInterval(emotionIntervalId);
+        emotionIntervalId = null;
+      }
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((t) => t.stop());
+        cameraStream = null;
+      }
+      cameraWrap.style.display = 'none';
+      emotionResultEl.textContent = '';
+    }
+
+    async function startCameraEmotionLoop() {
+      stopCameraEmotionLoop();
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: false });
+        cameraVideo.srcObject = cameraStream;
+        cameraWrap.style.display = 'block';
+        emotionResultEl.textContent = 'Camera on. Analyzing expression every few seconds…';
+      } catch (e) {
+        emotionResultEl.textContent = 'Camera error: ' + e.message;
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = 320;
+      canvas.height = 240;
+      const ctx = canvas.getContext('2d');
+      const EMOTION_INTERVAL_MS = 4000;
+
+      emotionIntervalId = setInterval(async () => {
+        if (!sessionActive || !cameraStream || !cameraVideo.videoWidth) return;
+        try {
+          ctx.drawImage(cameraVideo, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+          const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+          const res = await fetch(API + '/api/story/emotion-from-camera', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ frame: base64, updateMusic: true }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            const msg = data.musicUpdated
+              ? 'Detected: ' + data.emotion + ' — music updated'
+              : 'Detected: ' + data.emotion + ' (' + data.mood + ')';
+            emotionResultEl.textContent = msg;
+          } else {
+            emotionResultEl.textContent = 'Emotion: ' + (data.details || data.error || 'error');
+          }
+        } catch (e) {
+          emotionResultEl.textContent = 'Emotion request failed: ' + e.message;
+        }
+      }, EMOTION_INTERVAL_MS);
+    }
+
+    useCameraCheckbox.addEventListener('change', () => {
+      if (sessionActive && useCameraCheckbox.checked) startCameraEmotionLoop();
+      else if (!useCameraCheckbox.checked) stopCameraEmotionLoop();
+    });
+
+    btnSetTheme.addEventListener('click', async () => {
+      const themeDescription = themeDescriptionEl.value.trim();
+      if (!themeDescription) {
+        themeStatusEl.textContent = 'Enter a theme description first.';
+        return;
+      }
+      try {
+        const res = await fetch(API + '/api/story/set-theme', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ themeDescription }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          themeStatusEl.textContent = 'Theme: ' + (data.userTheme || themeDescription);
+          setStatus('Theme updated to: ' + data.userTheme, 'playing');
+        } else {
+          themeStatusEl.textContent = data.details || data.error || 'Failed';
+        }
+      } catch (e) {
+        themeStatusEl.textContent = 'Error: ' + e.message;
       }
     });
 
