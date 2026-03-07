@@ -10,6 +10,7 @@ import { generateSceneImage } from '../ai/nanobanana.js';
 import { getMusicForMood, getAvailableMoods } from '../ai/lyria.js';
 import { detectDiceRoll } from '../vision/dice_detection.js';
 import { resolveCampaignId } from './resolve_campaign.js';
+import { isChromaEnabled } from '../memory/chroma.js';
 import {
   getCampaign,
   appendEvent,
@@ -70,6 +71,7 @@ router.post('/action', async (req, res) => {
       music_mood: storyBeat.music_mood,
       location: storyBeat.location || 'Unknown',
       timestamp: Date.now(),
+      eventKind: 'game',
     };
     appendEvent(campaignId, event);
     addLocation(campaignId, storyBeat.location);
@@ -184,6 +186,7 @@ router.get('/health', (req, res) => {
     has_speech: !!process.env.GEMINI_API_KEY,
     has_nanobanana: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.NANOBANANA_API_KEY),
     has_lyria: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.LYRIA_API_KEY),
+    has_semantic_memory: isChromaEnabled(),
   });
 });
 

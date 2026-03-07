@@ -29,6 +29,8 @@ const THEME_MAP = {
   bedtime: [
     'gentle lullaby piano',
     'soft ambient dream music',
+    'gentle music box lullaby',
+    'fading starlight chimes',
   ],
   'under the sea': [
     'soft oceanic ambience',
@@ -96,6 +98,12 @@ const STAGE_EVENT_OVERRIDES = {
   },
 };
 
+const WIND_DOWN_DESCRIPTORS = [
+  'gentle music box lullaby',
+  'soft breathing ambience',
+  'fading starlight chimes',
+];
+
 /** Last applied scene for throttling */
 let lastScene = {
   theme: null,
@@ -106,7 +114,7 @@ let lastScene = {
 /**
  * Generate WeightedPrompts for Lyria RealTime from scene signals.
  * When scene.detected_events contains yawn/laugh/scared, stage-event overrides are applied (stronger than baseline emotion).
- * @param {object} scene - { theme, genre, mood, intensity, emotion, detected_events? } (all optional)
+ * @param {object} scene - { theme, genre, mood, intensity, emotion, storyEnergy, detected_events? } (all optional)
  * @returns {{ weightedPrompts: Array<{ text: string, weight: number }>, theme: string, mood: string, intensity: number, stageEventConfig?: { bpm: number, density: number } }}
  */
 export function generateMusicPrompts(scene) {
@@ -124,14 +132,15 @@ export function generateMusicPrompts(scene) {
   }
 
   const theme = normalizeString(scene?.theme) || 'bedtime';
-  const mood = normalizeString(scene?.mood) || 'calm';
+  const storyEnergy = normalizeStoryEnergy(scene?.storyEnergy ?? scene?.story_energy);
+  const mood = resolveWindDownMood(normalizeString(scene?.mood) || 'calm', storyEnergy);
   const rawIntensity = typeof scene?.intensity === 'number' ? scene.intensity : 0.5;
   const emotion = normalizeString(scene?.emotion) || 'neutral';
 
   const emotionIntensity = EMOTION_MAP[emotion] ?? EMOTION_MAP.neutral;
-  const intensity = Math.max(0, Math.min(1, (rawIntensity + emotionIntensity) / 2));
+  const intensity = resolveWindDownIntensity(rawIntensity, emotionIntensity, storyEnergy);
 
-  const descriptors = THEME_MAP[theme] || THEME_MAP.default;
+  const descriptors = getDescriptors(theme, storyEnergy);
 
   const weightedPrompts = [];
   for (let i = 0; i < descriptors.length; i++) {
@@ -191,6 +200,54 @@ export function resetThrottle() {
 function normalizeString(s) {
   if (s == null || typeof s !== 'string') return null;
   return s.toLowerCase().trim() || null;
+}
+
+/**
+ * Normalize story energy into a 0..1 value.
+ * @param {number|undefined} storyEnergy
+ * @returns {number}
+ */
+function normalizeStoryEnergy(storyEnergy) {
+  const numeric = Number(storyEnergy);
+  if (Number.isNaN(numeric)) return 1;
+  return Math.max(0, Math.min(1, numeric));
+}
+
+/**
+ * Shift the mood toward sleepier descriptors as story energy drops.
+ * @param {string} mood
+ * @param {number} storyEnergy
+ * @returns {string}
+ */
+function resolveWindDownMood(mood, storyEnergy) {
+  if (storyEnergy <= 0.2) return 'sleepy';
+  if (storyEnergy <= 0.45) return 'peaceful';
+  return mood;
+}
+
+/**
+ * Lower music intensity as the bedtime story winds down.
+ * @param {number} rawIntensity
+ * @param {number} emotionIntensity
+ * @param {number} storyEnergy
+ * @returns {number}
+ */
+function resolveWindDownIntensity(rawIntensity, emotionIntensity, storyEnergy) {
+  const baseIntensity = Math.max(0, Math.min(1, (rawIntensity + emotionIntensity) / 2));
+  const energyBias = 0.2 + storyEnergy * 0.6;
+  return Math.max(0.08, Math.min(1, baseIntensity * energyBias));
+}
+
+/**
+ * Choose theme descriptors and layer in bedtime wind-down details when needed.
+ * @param {string} theme
+ * @param {number} storyEnergy
+ * @returns {string[]}
+ */
+function getDescriptors(theme, storyEnergy) {
+  const baseDescriptors = THEME_MAP[theme] || THEME_MAP.default;
+  if (storyEnergy > 0.5) return baseDescriptors;
+  return [...baseDescriptors, ...WIND_DOWN_DESCRIPTORS];
 }
 
 /** Default prompts for session start (calm lullaby). */

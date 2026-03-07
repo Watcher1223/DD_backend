@@ -14,10 +14,13 @@ const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash
 const GEMINI_VISION_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_VISION_MODEL}:generateContent`;
 
 const ANALYSIS_PROMPT = `Analyze this image and identify every person visible.
-For each person, provide a structured description of their appearance.
+For each person, provide a structured description of their appearance for use in a bedtime-story illustration pipeline.
 
 Label each person as "child" or "adult" based on apparent age.
 If multiple children or adults appear, append a number (e.g. "child_1", "child_2").
+
+Keep the label grounded ("child", "adult"), but also invent a gentle storybook-style fantasy name inspired by the person's appearance.
+Write one short character_description that sounds like a warm illustrated storybook caption.
 
 Also briefly describe the setting/environment visible in the frame.
 
@@ -26,6 +29,8 @@ Respond with ONLY valid JSON in this exact format:
   "people": [
     {
       "label": "child or adult (with optional number suffix)",
+      "fantasy_name": "storybook-inspired character name",
+      "character_description": "warm one-sentence storybook description",
       "hair": "color, length, style",
       "clothing": "description of visible clothing",
       "features": "distinguishing features like glasses, freckles, etc",
@@ -45,7 +50,7 @@ const ANALYSIS_DEFAULTS = {
 /**
  * Analyze a webcam frame to extract character appearance descriptions.
  * @param {string} frameBase64 - Base64 encoded JPEG/PNG image from webcam
- * @returns {Promise<{people: Array<{label: string, hair: string, clothing: string, features: string, age_range: string}>, setting: string}>}
+ * @returns {Promise<{people: Array<{label: string, fantasy_name: string, character_description: string, hair: string, clothing: string, features: string, age_range: string}>, setting: string}>}
  */
 export async function analyzeCharacters(frameBase64) {
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {

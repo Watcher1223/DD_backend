@@ -15,6 +15,7 @@ import cameraRoutes from './routes/camera.js';
 import speechRoutes from './routes/speech.js';
 import storyRoutes from './routes/story.js';
 import { initDb } from './db/index.js';
+import { initChroma, isChromaEnabled } from './memory/chroma.js';
 
 const PORT = parseInt(process.env.PORT || '4300', 10);
 
@@ -110,11 +111,13 @@ app.use('/api', storyRoutes);
 // ── Root ──
 app.get('/', (req, res) => {
   res.json({
-    name: 'Living Worlds — AI Dungeon Master',
+    name: 'Living Worlds — Bedtime Story Engine',
     version: '1.0.0',
     testAudio: 'GET /test-audio.html to verify narration + music playback',
     testStoryAudio: 'GET /test-story-audio.html to test bedtime story moods and emotions (Lyria RealTime)',
     endpoints: {
+      storyConfigure: 'POST /api/story/configure',
+      storyBeat: 'POST /api/story/beat',
       action: 'POST /api/action',
       dice: 'POST /api/dice',
       cameraAnalyze: 'POST /api/camera/analyze (character vision)',
@@ -133,6 +136,7 @@ app.get('/', (req, res) => {
       storyStart: 'POST /api/story/start',
       storyStop: 'POST /api/story/stop',
       storyStatus: 'GET /api/story/status',
+      storyExport: 'GET /api/story/export',
       musicUpdate: 'POST /api/music/update',
     },
     websocket: `ws://localhost:${PORT}`,
@@ -140,18 +144,25 @@ app.get('/', (req, res) => {
 });
 
 // ── Start ──
-server.listen(PORT, () => {
-  console.log('');
-  console.log('  ⚔️  LIVING WORLDS — AI Dungeon Master');
-  console.log('  ────────────────────────────────────');
-  console.log(`  HTTP:      http://localhost:${PORT}`);
-  console.log(`  WebSocket: ws://localhost:${PORT}`);
-  console.log('  Database:  connected');
-  console.log(`  Gemini:    ${process.env.GEMINI_API_KEY ? 'configured' : 'required (set GEMINI_API_KEY)'}`);
-  console.log(`  Vision:    ${process.env.GEMINI_API_KEY ? 'configured (camera analysis)' : 'requires GEMINI_API_KEY'}`);
-  console.log(`  Speech:    ${process.env.GEMINI_API_KEY ? 'configured (speech-to-text)' : 'requires GEMINI_API_KEY'}`);
-  console.log(`  NanoBanana:${process.env.NANOBANANA_API_KEY ? 'NanoBanana 2' : process.env.GOOGLE_CLOUD_PROJECT ? 'Imagen (Vertex)' : 'required (NANOBANANA_API_KEY or GOOGLE_CLOUD_PROJECT)'}`);
-  console.log(`  Lyria:     ${process.env.GOOGLE_CLOUD_PROJECT ? 'Vertex Lyria 2' : 'required (GOOGLE_CLOUD_PROJECT)'}`);
-  console.log(`  Lyria RT:  ${process.env.GEMINI_API_KEY ? 'Gemini API (bedtime story)' : 'use GEMINI_API_KEY for story mode'}`);
-  console.log('');
-});
+async function start() {
+  await initChroma();
+
+  server.listen(PORT, () => {
+    console.log('');
+    console.log('  🌙  LIVING WORLDS — Bedtime Story Engine');
+    console.log('  ────────────────────────────────────');
+    console.log(`  HTTP:      http://localhost:${PORT}`);
+    console.log(`  WebSocket: ws://localhost:${PORT}`);
+    console.log('  Database:  connected');
+    console.log(`  Gemini:    ${process.env.GEMINI_API_KEY ? 'configured' : 'required (set GEMINI_API_KEY)'}`);
+    console.log(`  Vision:    ${process.env.GEMINI_API_KEY ? 'configured (camera analysis)' : 'requires GEMINI_API_KEY'}`);
+    console.log(`  Speech:    ${process.env.GEMINI_API_KEY ? 'configured (speech-to-text)' : 'requires GEMINI_API_KEY'}`);
+    console.log(`  NanoBanana:${process.env.NANOBANANA_API_KEY ? 'NanoBanana 2' : process.env.GOOGLE_CLOUD_PROJECT ? 'Imagen (Vertex)' : 'required (NANOBANANA_API_KEY or GOOGLE_CLOUD_PROJECT)'}`);
+    console.log(`  Lyria:     ${process.env.GOOGLE_CLOUD_PROJECT ? 'Vertex Lyria 2' : 'required (GOOGLE_CLOUD_PROJECT)'}`);
+    console.log(`  Lyria RT:  ${process.env.GEMINI_API_KEY ? 'Gemini API (bedtime story)' : 'use GEMINI_API_KEY for bedtime mode'}`);
+    console.log(`  Chroma:    ${isChromaEnabled() ? 'connected (semantic memory)' : 'unavailable (optional)'}`);
+    console.log('');
+  });
+}
+
+start();

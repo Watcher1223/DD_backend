@@ -31,7 +31,8 @@ Before or after loading the app, call the health endpoint to know what’s live 
   "has_vision": true,
   "has_speech": true,
   "has_nanobanana": true,
-  "has_lyria": true
+  "has_lyria": true,
+  "has_semantic_memory": false
 }
 ```
 
@@ -44,12 +45,14 @@ Before or after loading the app, call the health endpoint to know what’s live 
 | `has_speech` | boolean | `true` = Speech-to-text available (uses same Gemini key). `false` = transcription endpoint will return 503. |
 | `has_nanobanana` | boolean | `true` = NanoBanana or Vertex Imagen available for images. `false` = action will fail for image until configured. |
 | `has_lyria` | boolean | `true` = Vertex Lyria 2 available for music. `false` = music will return 502 until GOOGLE_CLOUD_PROJECT + billing. |
+| `has_semantic_memory` | boolean | `true` = Chroma semantic memory connected. Story generation uses retrieved character/scene memories for better consistency. `false` = stories use recent history only (still fully functional). |
 
 **Frontend recommendations:**
 
 - If `has_gemini` is false, actions will return 503; show “Configure Gemini API” or disable the action button.
 - If `has_nanobanana` is false, scene image may fail (503) until NanoBanana or Imagen is configured.
 - If `has_lyria` is false, music URLs will return 502; hide or disable music or show “Music unavailable”.
+- If `has_semantic_memory` is true, character appearances and story scenes are indexed for retrieval. Image and narration consistency across beats improves automatically; no frontend changes required.
 - Use `campaign_events` to show “Session has N events” or to decide whether to offer “Continue” vs “New game”.
 
 ---
@@ -455,7 +458,38 @@ Use `fetch()` and parse JSON on non-OK to show `details` to the user.
 
 ## Bedtime story mode
 
-Bedtime story uses **Lyria RealTime** (Gemini API `lyria-realtime-exp`) for **continuous** adaptive music. **Theme** comes from the **user’s voice or text description** (e.g. “bedtime story in the forest”); the server extracts a theme key and uses it for music. **Emotion/mood/intensity** can come from the camera (Gemini Vision) or from presets. Start a session with `POST /api/story/start`, then receive raw PCM audio over the WebSocket by subscribing to the `story_audio` channel.
+Bedtime story uses **Lyria RealTime** (Gemini API `lyria-realtime-exp`) for **continuous** adaptive music. **Theme** comes from the **user’s voice or text description** (e.g. “bedtime story in the forest”); the server extracts a theme key and uses it for music. **Emotion/mood/intensity** can come from the camera (Gemini Vision) or from presets. The bedtime path also stores a per-campaign story session with the child’s name, age, learning goals, and wind-down energy. Start a session with `POST /api/story/start`, then receive raw PCM audio over the WebSocket by subscribing to the `story_audio` channel.
+
+### `POST /api/story/configure`
+
+Create or update the bedtime story configuration that powers personalized beats.
+
+**Request body:**
+
+```json
+{
+  "childName": "Luna",
+  "childAge": 6,
+  "learningGoals": ["counting to 5", "sharing"],
+  "campaignId": 1
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "campaignId": 1,
+  "childName": "Luna",
+  "childAge": 6,
+  "learningGoals": ["counting to 5", "sharing"],
+  "storyEnergy": 1,
+  "createdAt": 1709765432000,
+  "updatedAt": 1709765432000
+}
+```
+
+**Errors:** `400` — Missing/invalid `childName` or `childAge`. `404` — Campaign not found.
 
 ### `POST /api/story/start`
 
@@ -495,7 +529,66 @@ Returns Lyria chunk count and session state (for debugging no-audio). **Response
 
 ### `POST /api/story/beat`
 
-Bedtime story beat: Gemini generates narration + theme/mood/emotion; state is persisted; if a story session is active, music prompts are updated. **Body:** `{ "action": "string" }` (required), optional `campaignId`. **Response:** `narration`, `scene_prompt`, `theme`, `mood`, `intensity`, `emotion`, `location`, `event_number`.
+Bedtime story beat: Gemini generates narration using the configured child profile, learning goals, stored camera appearances, and current story energy. The backend validates safety, generates an illustration, persists the page, and updates Lyria prompts when a story session is active.
+
+**Request body:** `{ "action": "string", "campaignId": 1 }`
+
+**Response (200):**
+
+```json
+{
+  "narration": "Luna follows the lantern glow as five sleepy fireflies drift overhead.",
+  "scene_prompt": "gentle bedtime illustration ...",
+  "image": {
+    "imageUrl": "https://... or data:image/png;base64,...",
+    "source": "nanobanana"
+  },
+  "music": {
+    "theme": "magical forest",
+    "genre": "lullaby",
+    "mood": "peaceful",
+    "intensity": 0.22,
+    "emotion": "sleepy"
+  },
+  "theme": "magical forest",
+  "mood": "peaceful",
+  "intensity": 0.22,
+  "emotion": "sleepy",
+  "learning_moment": "counting to 5",
+  "location": "Firefly Path",
+  "story_energy": 0.85,
+  "event_number": 3
+}
+```
+
+**Errors:**
+
+- `400` — Missing `action`
+- `404` — Campaign not found
+- `409` — Story session not configured; call `POST /api/story/configure` first
+- `503` — Gemini, image generation, or safety validation failed
+
+### `GET /api/story/export`
+
+Compile persisted bedtime beats into a storybook-friendly payload for frontend rendering.
+
+**Response (200):**
+
+```json
+{
+  "campaignId": 1,
+  "childName": "Luna",
+  "learningGoals": ["counting to 5", "sharing"],
+  "pages": [
+    {
+      "narration": "Luna follows the lantern glow...",
+      "imageUrl": "https://...",
+      "scene_prompt": "gentle bedtime illustration ...",
+      "learning_moment": "counting to 5"
+    }
+  ]
+}
+```
 
 ### `POST /api/story/emotion-from-camera`
 
@@ -533,7 +626,7 @@ Send a webcam frame; **Gemini Vision** infers **emotion, mood, and intensity** f
 - `400` — Missing `frame`: `{ "error": "frame is required (base64 encoded image)" }`
 - `503` — Gemini not configured or vision failed: `{ "error": "Emotion analysis failed", "details": "..." }`
 
-**Frontend flow:** Set theme from user voice/text via `POST /api/story/start` (body: `themeDescription`) or `POST /api/story/set-theme`. Start story session → (optional) get user media → every 3–4 s capture frame → POST to emotion-from-camera with `updateMusic: true` → show `emotion` / `theme` / `musicUpdated` in UI.
+**Frontend flow:** Call `POST /api/story/configure` first to save `childName`, `childAge`, and `learningGoals`. Set theme from user voice/text via `POST /api/story/start` (body: `themeDescription`) or `POST /api/story/set-theme`. Start story session → (optional) get user media → every 3–4 s capture frame → POST to emotion-from-camera with `updateMusic: true` → call `POST /api/story/beat` for each story turn → render `GET /api/story/export` as a storybook gallery at the end.
 
 ### WebSocket: story audio
 
@@ -581,7 +674,7 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 
 ## Design checklist for real data
 
-- [ ] Call `GET /api/health` on load and use `has_gemini`, `has_vision`, `has_speech`, `has_nanobanana`, `has_lyria` to adapt UI (labels, disabled features, or “demo mode”).
+- [ ] Call `GET /api/health` on load and use `has_gemini`, `has_vision`, `has_speech`, `has_nanobanana`, `has_lyria`, `has_semantic_memory` to adapt UI (labels, disabled features, or “demo mode”).
 - [ ] If `has_vision` is true, offer camera capture for character analysis before starting the story.
 - [ ] If `has_speech` is true, show a microphone button for voice input alongside the text field.
 - [ ] Show loading state for `POST /api/action` (2–5+ seconds typical).
@@ -594,6 +687,8 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 - [ ] Handle 400/404/500 with user-friendly messages.
 - [ ] Optionally connect to the WebSocket and handle `type: "story_update"` for real-time story updates.
 - [ ] **Bedtime story:** Subscribe to `story_audio` **before** calling `POST /api/story/start`; decode `audio_chunk.payload` (base64 → Int16, 48 kHz stereo) and play with Web Audio API. See [FRONTEND.md](./FRONTEND.md) for integration steps.
+- [ ] **Bedtime personalization:** Save the child profile with `POST /api/story/configure` before the first bedtime beat.
+- [ ] **Storybook export:** Use `GET /api/story/export` to render the final page gallery with narration and illustrations.
 
 ---
 
@@ -619,6 +714,7 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 | GET | `/api/tts?text=...` | Narration speech (used by backend) |
 | GET | `/api/music/generate?mood=...` | Lyria 2 music stream (used by backend) |
 | POST | `/api/story/start` | Start bedtime story Lyria RealTime session |
+| POST | `/api/story/configure` | Save child profile + learning goals for bedtime mode |
 | POST | `/api/story/stop` | Stop story session |
 | GET | `/api/story/status` | Whether story session is active + userTheme |
 | GET | `/api/story/debug` | Lyria chunk count + session active (debug) |
@@ -626,4 +722,5 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 | POST | `/api/story/emotion-from-camera` | Camera frame → Gemini emotion/mood/intensity; theme from session |
 | POST | `/api/music/update` | Update theme/mood for adaptive music (story session) |
 | POST | `/api/story/beat` | Bedtime story beat (Gemini + optional music update) |
+| GET | `/api/story/export` | Export bedtime beats as storybook pages |
 | WS | `/` | Real-time `story_update` broadcasts; subscribe `story_audio` for PCM |

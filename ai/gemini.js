@@ -43,28 +43,6 @@ You must respond with ONLY valid JSON in this exact format (no markdown, no code
 }`;
 
 // Bedtime story: gentle narration + theme/mood/emotion for adaptive music
-const BEDTIME_SYSTEM_PROMPT = `You are a gentle storyteller narrating a short bedtime story for a child.
-
-RULES:
-- Narrate in second person present tense ("You drift into a soft forest...")
-- Keep each beat to 2-3 short, calming sentences
-- Use soft, child-friendly imagery (magical forest, friendly animals, stars, dreams)
-- No violence or fear
-- Never break character
-
-You must respond with ONLY valid JSON in this exact format (no markdown, no code fences; escape any quotes inside strings with \\ and no newlines inside string values):
-{
-  "narration": "Your 2-3 sentence calming narration here",
-  "scene_prompt": "A detailed visual description for an image generator: gentle bedtime illustration of [scene], soft lighting, dreamy, child-friendly, watercolor style",
-  "theme": "one of: magical forest, bedtime, under the sea, fairy tale, space adventure, calm, fantasy",
-  "genre": "fantasy or lullaby",
-  "mood": "one of: calm, peaceful, sleepy, gentle, dreamy",
-  "intensity": 0.0 to 1.0 number (keep low for bedtime, e.g. 0.2 to 0.4)",
-  "emotion": "one of: sleepy, calm, happy, peaceful, neutral, curious",
-  "characters_mentioned": ["list", "of", "character", "names"],
-  "location": "current location name"
-}`;
-
 /** Extract a single theme key from the user's spoken or typed description (e.g. "bedtime story in the forest" → "magical forest"). */
 const THEME_EXTRACT_PROMPT = `The user will give a short description of the setting or theme they want for a bedtime story (e.g. "story in the forest", "under the sea", "space adventure").
 Pick the ONE theme that best matches their description from this exact list (return only the theme string, no explanation):
@@ -187,21 +165,28 @@ function normalizeThemeFallback(text) {
  * Generate a bedtime story beat (narration + theme signals for adaptive music).
  * @param {string} playerAction - What the listener said or what happens next
  * @param {object} campaign - Full campaign history object (same shape as DM)
- * @param {{ protagonist_description?: string }} [options] - Optional protagonist (e.g. doll) so the hero of the story matches
- * @returns {object} { narration, scene_prompt, theme, genre, mood, intensity, emotion, characters_mentioned, location }
+ * @param {{ campaign_id: number, child_name: string, child_age: number, learning_goals: string[], story_energy: number }|null} [storySession]
+ * @param {Array<{label: string, appearance: object}>} [sessionProfiles]
+ * @param {string} [memoryContext] - Pre-summarized semantic memory from Chroma
+ * @param {{ protagonist_description?: string, language?: string }} [options] - Optional overrides
+ * @returns {object} { narration, scene_prompt, theme, genre, mood, intensity, emotion, learning_moment, characters_mentioned, location, story_energy }
  */
-export async function generateBedtimeStoryBeat(playerAction, campaign, options = {}) {
-  const historyContext = buildHistoryContext(campaign);
+export async function generateBedtimeStoryBeat(playerAction, campaign, storySession, sessionProfiles, memoryContext, options = {}) {
+  const historyContext = buildBedtimeHistoryContext(campaign);
+  const storySessionContext = buildStorySessionContext(storySession);
+  const appearanceContext = buildAppearanceContext(sessionProfiles);
   const protagonist_description = options?.protagonist_description;
   const language = options?.language;
 
-  let userPrompt = [
+  const promptParts = [
     historyContext,
-    '',
-    `NEXT: "${playerAction}"`,
-    '',
-    'Generate the next story beat as JSON.',
-  ].join('\n');
+    storySessionContext,
+    appearanceContext,
+  ];
+  if (memoryContext) promptParts.push(memoryContext);
+  promptParts.push('', `NEXT: "${playerAction}"`, '', 'Generate the next story beat as JSON.');
+
+  let userPrompt = promptParts.join('\n');
 
   if (language && LANGUAGE_NAMES[language]) {
     userPrompt = `Narrate in ${LANGUAGE_NAMES[language]}. All narration text must be in that language.\n\n` + userPrompt;
@@ -219,7 +204,7 @@ export async function generateBedtimeStoryBeat(playerAction, campaign, options =
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: BEDTIME_SYSTEM_PROMPT }] },
+        system_instruction: { parts: [{ text: buildBedtimeSystemPrompt(storySession) }] },
         contents: [{ parts: [{ text: userPrompt }] }],
         generationConfig: {
           temperature: 0.8,
@@ -232,12 +217,16 @@ export async function generateBedtimeStoryBeat(playerAction, campaign, options =
     const data = await res.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
     if (text) {
-      const parsed = parseGeminiJson(text);
+      const parsed = parseGeminiJson(text, BEDTIME_BEAT_DEFAULTS);
       if (parsed) {
         if (!parsed.theme) parsed.theme = 'bedtime';
         if (!parsed.mood) parsed.mood = 'calm';
-        if (parsed.intensity == null || Number.isNaN(Number(parsed.intensity))) parsed.intensity = 0.3;
+        parsed.intensity = clampBedtimeIntensity(parsed.intensity);
         if (!parsed.emotion) parsed.emotion = 'neutral';
+        if (!parsed.learning_moment) {
+          parsed.learning_moment = storySession?.learning_goals?.[0] || 'gentle bedtime routine';
+        }
+        parsed.story_energy = getNextStoryEnergy(storySession?.story_energy);
         return parsed;
       }
     }
@@ -314,6 +303,18 @@ const STORY_BEAT_DEFAULTS = {
   location: 'Unknown',
 };
 
+const BEDTIME_BEAT_DEFAULTS = {
+  scene_prompt: 'gentle bedtime illustration, soft lighting, dreamy watercolor style',
+  theme: 'bedtime',
+  genre: 'lullaby',
+  mood: 'calm',
+  intensity: 0.3,
+  emotion: 'sleepy',
+  learning_moment: 'gentle bedtime routine',
+  characters_mentioned: [],
+  location: 'Dream Meadow',
+};
+
 function buildHistoryContext(campaign) {
   const lines = ['CAMPAIGN HISTORY:'];
 
@@ -341,6 +342,37 @@ function buildHistoryContext(campaign) {
 }
 
 /**
+ * Build a bedtime-story history section with a softer opening scene.
+ * @param {{ characters: Array<{name: string, role: string}>, locations: string[], events: Array<{location?: string, narration: string}> }} campaign
+ * @returns {string}
+ */
+function buildBedtimeHistoryContext(campaign) {
+  const lines = ['BEDTIME STORY HISTORY:'];
+
+  if (campaign.characters.length > 0) {
+    lines.push(`Helpful story friends: ${campaign.characters.map((c) => `${c.name} (${c.role})`).join(', ')}`);
+  }
+
+  if (campaign.locations.length > 0) {
+    lines.push(`Dreamy places so far: ${campaign.locations.join(', ')}`);
+  }
+
+  const recentEvents = campaign.events.slice(-8);
+  if (recentEvents.length > 0) {
+    lines.push('', 'RECENT STORY BEATS:');
+    for (const evt of recentEvents) {
+      lines.push(`- [${evt.location || 'unknown'}] ${evt.narration.slice(0, 120)}`);
+    }
+  }
+
+  if (campaign.events.length === 0) {
+    lines.push('', 'This is the opening bedtime scene. Begin somewhere cozy, magical, and immediately soothing.');
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Build a prompt section describing real character appearances from camera analysis.
  * Returns empty string if no profiles are available.
  * @param {Array<{label: string, appearance: object}>} [profiles]
@@ -352,6 +384,8 @@ function buildAppearanceContext(profiles) {
   const lines = ['', 'CHARACTER APPEARANCES (from camera):'];
   for (const { label, appearance } of profiles) {
     const parts = [label];
+    if (appearance.fantasy_name) parts.push(`storybook name: ${appearance.fantasy_name}`);
+    if (appearance.character_description) parts.push(`storybook description: ${appearance.character_description}`);
     if (appearance.hair) parts.push(`hair: ${appearance.hair}`);
     if (appearance.clothing) parts.push(`clothing: ${appearance.clothing}`);
     if (appearance.features) parts.push(`features: ${appearance.features}`);
@@ -360,4 +394,111 @@ function buildAppearanceContext(profiles) {
   }
   lines.push('Include these appearance details in the scene_prompt so generated images match the real people.');
   return lines.join('\n');
+}
+
+/**
+ * Build the bedtime-specific system prompt with child/session context.
+ * @param {{ child_name: string, child_age: number, learning_goals: string[], story_energy: number }|null} storySession
+ * @returns {string}
+ */
+function buildBedtimeSystemPrompt(storySession) {
+  const childName = storySession?.child_name || 'the child';
+  const childAge = storySession?.child_age ?? 'unknown';
+  const learningGoals = formatLearningGoals(storySession?.learning_goals);
+  const storyEnergy = formatStoryEnergy(storySession?.story_energy);
+
+  return `You are a gentle storyteller narrating a short bedtime story for a child.
+
+RULES:
+- Narrate in second person present tense, but use the child's name "${childName}" naturally instead of only saying "you"
+- Keep each beat to 2-3 short, calming sentences
+- Use vocabulary appropriate for a child around age ${childAge}
+- Weave these learning goals into the beat naturally when possible: ${learningGoals}
+- The current wind-down level is ${storyEnergy}. As energy decreases, make the pacing softer, the sentences shorter, and the imagery sleepier
+- Use soft, child-friendly imagery such as friendly animals, stars, dreams, gentle magic, and comforting routines
+- Never include violence, fear, death, peril, threats, or anything inappropriate for a child
+- Never break character
+
+You must respond with ONLY valid JSON in this exact format (no markdown, no code fences; escape any quotes inside strings with \\ and no newlines inside string values):
+{
+  "narration": "Your 2-3 sentence calming narration here",
+  "scene_prompt": "A detailed visual description for an image generator: gentle bedtime illustration of [scene], soft lighting, dreamy, child-friendly, watercolor style",
+  "theme": "one of: magical forest, bedtime, under the sea, fairy tale, space adventure, calm, fantasy",
+  "genre": "fantasy or lullaby",
+  "mood": "one of: calm, peaceful, sleepy, gentle, dreamy",
+  "intensity": 0.0 to 1.0 number (keep low for bedtime, e.g. 0.1 to 0.4)",
+  "emotion": "one of: sleepy, calm, happy, peaceful, neutral, curious",
+  "learning_moment": "Short phrase naming the educational concept used in this beat",
+  "characters_mentioned": ["list", "of", "character", "names"],
+  "location": "current location name"
+}`;
+}
+
+/**
+ * Build prompt context for the bedtime session configuration.
+ * @param {{ child_name: string, child_age: number, learning_goals: string[], story_energy: number }|null} storySession
+ * @returns {string}
+ */
+function buildStorySessionContext(storySession) {
+  if (!storySession) {
+    return [
+      '',
+      'STORY SESSION:',
+      '- No custom child profile has been configured yet.',
+      '- Keep the narration broadly child-friendly and bedtime-focused.',
+    ].join('\n');
+  }
+
+  return [
+    '',
+    'STORY SESSION:',
+    `- Child name: ${storySession.child_name}`,
+    `- Child age: ${storySession.child_age}`,
+    `- Learning goals: ${formatLearningGoals(storySession.learning_goals)}`,
+    `- Current story energy: ${formatStoryEnergy(storySession.story_energy)}`,
+  ].join('\n');
+}
+
+/**
+ * Compute the next bedtime story energy after one beat.
+ * @param {number|undefined} storyEnergy
+ * @returns {number}
+ */
+function getNextStoryEnergy(storyEnergy) {
+  const current = Number.isFinite(Number(storyEnergy)) ? Number(storyEnergy) : 1.0;
+  return Math.max(0, Math.min(1, current - 0.15));
+}
+
+/**
+ * Clamp bedtime intensity into the desired low-energy range.
+ * @param {number} intensity
+ * @returns {number}
+ */
+function clampBedtimeIntensity(intensity) {
+  const numeric = Number(intensity);
+  if (Number.isNaN(numeric)) return 0.3;
+  return Math.max(0.05, Math.min(0.4, numeric));
+}
+
+/**
+ * Format learning goals for prompt injection.
+ * @param {string[]|undefined} learningGoals
+ * @returns {string}
+ */
+function formatLearningGoals(learningGoals) {
+  if (!Array.isArray(learningGoals) || learningGoals.length === 0) {
+    return 'gentle bedtime calm, kindness, and imagination';
+  }
+  return learningGoals.join(', ');
+}
+
+/**
+ * Format story energy for prompt injection.
+ * @param {number|undefined} storyEnergy
+ * @returns {string}
+ */
+function formatStoryEnergy(storyEnergy) {
+  const numeric = Number(storyEnergy);
+  if (Number.isNaN(numeric)) return '1.00';
+  return Math.max(0, Math.min(1, numeric)).toFixed(2);
 }

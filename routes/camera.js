@@ -10,6 +10,7 @@ import { Router } from 'express';
 import { analyzeCharacters } from '../vision/character_analysis.js';
 import { resolveCampaignId } from './resolve_campaign.js';
 import { createPairing, resolvePairing, pruneExpired } from '../utils/pairing.js';
+import { upsertAppearanceMemory } from '../memory/chroma.js';
 import {
   upsertSessionProfile,
   getSessionProfiles,
@@ -29,6 +30,7 @@ async function analyzeAndStore(frame, campaignId) {
   const frameTs = Date.now();
   for (const person of analysis.people) {
     upsertSessionProfile(campaignId, person.label, person, frameTs);
+    upsertAppearanceMemory(campaignId, person, analysis.setting).catch(() => {});
   }
 
   return {

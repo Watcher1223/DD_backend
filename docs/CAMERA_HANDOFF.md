@@ -34,7 +34,10 @@ Both use the same Gemini API key and model (`GEMINI_VISION_MODEL`, defaults to `
 | `/api/camera/remote/:code` | POST | Phone sends a frame via pairing code (no campaignId needed) |
 | `/api/camera/profiles` | GET | Retrieve stored profiles (restore on reload) |
 | `/api/speech/transcribe` | POST | Send audio recording, get text transcript |
-| `/api/action` | POST | Send action text (typed or from transcript), profiles auto-injected |
+| `/api/story/configure` | POST | Save child name, age, and learning goals for bedtime mode |
+| `/api/story/beat` | POST | Send bedtime story action text, profiles auto-injected |
+| `/api/story/export` | GET | Export the finished bedtime story as storybook pages |
+| `/api/action` | POST | Send action text for the D&D path, profiles auto-injected |
 
 ---
 
@@ -47,6 +50,7 @@ utils/media.js                 — Shared MIME type detection for image + audio 
 utils/pairing.js               — In-memory pairing code store (phone ↔ campaign link)
 ai/parse_json.js               — Shared Gemini JSON response parser
 ai/gemini.js                   — Story engine (buildAppearanceContext injects profiles)
+memory/chroma.js               — Semantic memory layer (appearance + story scene indexing)
 routes/camera.js               — Camera endpoints: analyze, pair, remote, profiles
 routes/speech.js               — POST /api/speech/transcribe
 routes/resolve_campaign.js     — Shared campaign ID resolution
@@ -163,22 +167,33 @@ Both are true when `GEMINI_API_KEY` is set. If false, hide the respective UI.
 This happens automatically. No frontend work needed beyond the initial capture.
 
 ```
-POST /api/camera/analyze        — profiles stored in DB
+POST /api/camera/analyze        — profiles stored in DB + Chroma appearance memory (if enabled)
         ↓
-POST /api/action                — backend loads profiles from DB
+POST /api/story/beat            — backend loads profiles + story session from DB
+        |                         + retrieves semantic memories from Chroma (if enabled)
         ↓
-ai/gemini.js generateStoryBeat — appends to prompt:
+ai/gemini.js generateBedtimeStoryBeat — appends to prompt:
         |
         |   CHARACTER APPEARANCES (from camera):
-        |   - adult, hair: dark brown short, clothing: black hoodie, features: glasses beard, age: 25-30
-        |   - child, hair: blonde shoulder length, clothing: red t-shirt, features: freckles, age: 6-8
+        |   - adult, storybook name: Maple, storybook description: a cozy grown-up in a soft sweater, ...
+        |   - child, storybook name: Luna, storybook description: a brave little child with star pajamas, ...
         |   Include these appearance details in the scene_prompt so generated images match the real people.
+        |
+        |   SEMANTIC MEMORY (from prior observations):    ← only when Chroma is connected
+        |   Canonical character appearances:
+        |   - Role: child. Storybook name: Luna. Hair: brown curly. Clothing: star pajamas. (seen 3 times)
+        |   Related prior scenes:
+        |   - Action: explore the meadow. Narration: Luna tiptoes into the meadow... [Dream Meadow]
         |
         ↓
 Gemini includes descriptions in scene_prompt
         ↓
 scene_prompt sent to NanoBanana/Imagen for image generation
+        ↓
+story beat saved to DB + Chroma story memory (if enabled)
 ```
+
+> **Note:** Chroma semantic memory is optional. When unavailable, the flow above still works using only SQLite profiles and recent event history. Chroma adds long-term character consistency and semantic scene recall when connected.
 
 ---
 
@@ -292,16 +307,18 @@ If no profiles:
   → Option (b): Phone scans QR → opens phone-camera.html → captures
                  Desktop listens on WS for profiles_updated event
   → Show detected characters for confirmation
-  → User clicks "Start adventure"
+  → Parent configures childName, childAge, learningGoals via POST /api/story/configure
+  → User clicks "Start bedtime story"
   ↓
 If profiles exist:
   → Show "Welcome back" with stored appearance summary
   → Option to "Re-capture" or "Continue"
   ↓
-Game begins
+Bedtime story begins
   → Text input field + mic button (if has_speech)
   → User types OR clicks mic → records → POST /api/speech/transcribe → transcript fills text field
-  → User confirms/edits → POST /api/action (profiles injected automatically)
+  → User confirms/edits → POST /api/story/beat (profiles + child config injected automatically)
+  → When finished, GET /api/story/export for a storybook gallery
 ```
 
 ---

@@ -6,6 +6,7 @@
 import { Router } from 'express';
 import { createLyriaRealtimeSession } from '../ai/lyria_realtime.js';
 import { generateBedtimeStoryBeat, extractThemeFromDescription, generateCharacterInjectionBeat } from '../ai/gemini.js';
+import { generateSafeBedtimeStoryBeat } from '../ai/safety.js';
 import {
   generateMusicPrompts,
   shouldUpdatePrompts,
@@ -17,18 +18,21 @@ import { analyzeEmotionFromFrame } from '../vision/emotion_analysis.js';
 import { analyzeStageVision } from '../vision/stage_vision.js';
 import { generateSceneImage } from '../ai/nanobanana.js';
 import { detectToyInFrame } from '../vision/object_detection.js';
+import { retrieveMemoryContext, upsertStoryMemory } from '../memory/chroma.js';
 import {
   getCampaign,
-  getOrCreateDefaultCampaign,
-  appendEvent,
-  addLocation,
   getEventCount,
-  campaignExists,
+  getSessionProfiles,
+  createStorySession,
+  getStorySession,
+  getStoryPages,
+  saveStoryBeat,
 } from '../db/index.js';
+import { resolveCampaignId } from './resolve_campaign.js';
 
 const router = Router();
 
-/** In-memory active bedtime story session: { handle } or null */
+/** In-memory active bedtime story session: { handle, campaignId, userTheme } or null */
 let activeStorySession = null;
 
 /**
@@ -37,6 +41,11 @@ let activeStorySession = null;
  * Body: { themeDescription?: string } — user's voice/text (e.g. "bedtime story in the forest"); theme is extracted and used for music.
  */
 router.post('/story/start', async (req, res) => {
+  const campaignId = resolveCampaignId(req);
+  if (campaignId === null) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+
   if (activeStorySession) {
     return res.status(200).json({ ok: true, message: 'Session already active' });
   }
@@ -94,7 +103,7 @@ router.post('/story/start', async (req, res) => {
       markPromptsApplied({ theme, mood, intensity });
     }
 
-    activeStorySession = { handle, userTheme, lastSeenPeopleCount: 0, lastSeenLabels: new Set(), language: req.body?.language || null };
+    activeStorySession = { handle, userTheme, campaignId, lastSeenPeopleCount: 0, lastSeenLabels: new Set(), language: req.body?.language || null };
     resetThrottle();
     req.app.locals._lyriaChunkCount = 0;
 
@@ -121,12 +130,14 @@ router.post('/music/update', (req, res) => {
     });
   }
 
+  const storySession = getStorySession(activeStorySession.campaignId);
   const scene = {
     theme: req.body?.theme ?? 'bedtime',
     genre: req.body?.genre,
     mood: req.body?.mood ?? 'calm',
     intensity: req.body?.intensity,
     emotion: req.body?.emotion ?? 'neutral',
+    storyEnergy: req.body?.storyEnergy ?? req.body?.story_energy ?? storySession?.story_energy,
   };
 
   const { weightedPrompts, theme, mood, intensity } = generateMusicPrompts(scene);
@@ -165,12 +176,14 @@ router.post('/story/emotion-from-camera', async (req, res) => {
     let musicUpdated = false;
 
     if (updateMusic && activeStorySession) {
+      const storySession = getStorySession(activeStorySession.campaignId);
       const scene = {
         theme,
         mood: signals.mood,
         intensity: signals.intensity,
         emotion: signals.emotion,
         detected_events: signals.detected_events || [],
+        storyEnergy: storySession?.story_energy,
       };
       const result = generateMusicPrompts(scene);
       const { weightedPrompts, theme: t, mood, intensity, stageEventConfig } = result;
@@ -392,15 +405,33 @@ router.get('/story/debug', (req, res) => {
   res.json({ lyriaChunksReceived: count, sessionActive: !!activeStorySession });
 });
 
-function resolveCampaignId(req) {
-  const id = req.body?.campaignId ?? req.query?.campaignId;
-  if (id != null) {
-    const num = Number(id);
-    if (Number.isNaN(num) || !campaignExists(num)) return null;
-    return num;
+/**
+ * POST /api/story/configure
+ * Create or update bedtime story session configuration.
+ * Body: { childName, childAge, learningGoals?: string[], campaignId? }
+ */
+router.post('/story/configure', (req, res) => {
+  const campaignId = resolveCampaignId(req);
+  if (campaignId === null) {
+    return res.status(404).json({ error: 'Campaign not found' });
   }
-  return getOrCreateDefaultCampaign();
-}
+
+  const input = readStoryConfigureInput(req.body);
+  if (!input.ok) {
+    return res.status(400).json({ error: input.error });
+  }
+
+  const storySession = createStorySession(campaignId, input.value);
+  res.json({
+    campaignId,
+    childName: storySession.child_name,
+    childAge: storySession.child_age,
+    learningGoals: storySession.learning_goals,
+    storyEnergy: storySession.story_energy,
+    createdAt: storySession.created_at,
+    updatedAt: storySession.updated_at,
+  });
+});
 
 /**
  * POST /api/story/beat
@@ -419,9 +450,20 @@ router.post('/story/beat', async (req, res) => {
 
   try {
     const campaign = getCampaign(campaignId);
+    const storySession = getStorySession(campaignId);
+    if (!storySession) {
+      return res.status(409).json({
+        error: 'Story session not configured',
+        message: 'Call POST /api/story/configure first.',
+      });
+    }
+
+    const sessionProfiles = getSessionProfiles(campaignId);
+    const memoryContext = await retrieveMemoryContext(campaignId, action);
     const protagonist_description = activeStorySession?.protagonist_description;
     const language = activeStorySession?.language || req.body?.language || 'en';
-    const beat = await generateBedtimeStoryBeat(action, campaign, { protagonist_description, language });
+    const beat = await generateSafeBedtimeStoryBeat(action, campaign, storySession, sessionProfiles, memoryContext, { protagonist_description, language });
+    const image = await generateSceneImage(beat.scene_prompt);
 
     const event = {
       action,
@@ -431,17 +473,26 @@ router.post('/story/beat', async (req, res) => {
       music_mood: beat.theme || beat.mood || 'calm',
       location: beat.location || 'Unknown',
       timestamp: Date.now(),
+      imageUrl: image.imageUrl,
+      imageSource: image.source,
+      learningMoment: beat.learning_moment,
+      theme: beat.theme,
+      mood: beat.mood,
+      intensity: beat.intensity,
+      emotion: beat.emotion,
+      eventKind: 'story',
     };
-    appendEvent(campaignId, event);
-    if (beat.location) addLocation(campaignId, beat.location);
+    saveStoryBeat(campaignId, event, beat.story_energy);
+    upsertStoryMemory(campaignId, event).catch(() => {});
 
-    if (activeStorySession) {
+    if (activeStorySession?.campaignId === campaignId) {
       const scene = {
         theme: beat.theme,
         genre: beat.genre,
         mood: beat.mood,
         intensity: beat.intensity,
         emotion: beat.emotion,
+        storyEnergy: beat.story_energy,
       };
       const { weightedPrompts, theme, mood, intensity } = generateMusicPrompts(scene);
       if (shouldUpdatePrompts({ theme, mood, intensity })) {
@@ -458,11 +509,21 @@ router.post('/story/beat', async (req, res) => {
     res.json({
       narration: beat.narration,
       scene_prompt: beat.scene_prompt,
+      image,
+      music: {
+        theme: beat.theme,
+        genre: beat.genre,
+        mood: beat.mood,
+        intensity: beat.intensity,
+        emotion: beat.emotion,
+      },
       theme: beat.theme,
       mood: beat.mood,
       intensity: beat.intensity,
       emotion: beat.emotion,
+      learning_moment: beat.learning_moment,
       location: beat.location,
+      story_energy: beat.story_energy,
       event_number: eventNumber,
       language,
       narrationAudioUrl,
@@ -474,4 +535,68 @@ router.post('/story/beat', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/story/export
+ * Export bedtime story beats as storybook pages.
+ */
+router.get('/story/export', (req, res) => {
+  const campaignId = resolveCampaignId(req);
+  if (campaignId === null) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+
+  const storySession = getStorySession(campaignId);
+  const pages = getStoryPages(campaignId).map((page) => ({
+    narration: page.narration,
+    imageUrl: page.imageUrl,
+    scene_prompt: page.scene_prompt,
+    learning_moment: page.learningMoment,
+  }));
+
+  res.json({
+    campaignId,
+    childName: storySession?.child_name ?? null,
+    learningGoals: storySession?.learning_goals ?? [],
+    pages,
+  });
+});
+
 export default router;
+
+/**
+ * Validate bedtime story configuration payload.
+ * @param {any} body
+ * @returns {{ ok: true, value: { childName: string, childAge: number, learningGoals: string[] } } | { ok: false, error: string }}
+ */
+function readStoryConfigureInput(body) {
+  const childName = String(body?.childName || '').trim();
+  if (!childName) {
+    return { ok: false, error: 'childName is required' };
+  }
+
+  const childAge = Number(body?.childAge);
+  if (!Number.isInteger(childAge) || childAge < 1 || childAge > 18) {
+    return { ok: false, error: 'childAge must be an integer between 1 and 18' };
+  }
+
+  return {
+    ok: true,
+    value: {
+      childName,
+      childAge,
+      learningGoals: normalizeLearningGoals(body?.learningGoals),
+    },
+  };
+}
+
+/**
+ * Normalize configure payload learning goals.
+ * @param {unknown} learningGoals
+ * @returns {string[]}
+ */
+function normalizeLearningGoals(learningGoals) {
+  if (!Array.isArray(learningGoals)) return [];
+  return learningGoals
+    .map((goal) => String(goal || '').trim())
+    .filter(Boolean);
+}
