@@ -18,7 +18,12 @@ import { analyzeEmotionFromFrame } from '../vision/emotion_analysis.js';
 import { analyzeStageVision } from '../vision/stage_vision.js';
 import { generateSceneImage } from '../ai/nanobanana.js';
 import { detectToyInFrame } from '../vision/object_detection.js';
+<<<<<<< HEAD
 import { retrieveMemoryContext, upsertStoryMemory, queryStageIdentityByDescription, isReidentificationMatch, upsertStageIdentity } from '../memory/chroma.js';
+=======
+import { retrieveMemoryContext, upsertStoryMemory } from '../memory/chroma.js';
+import { getReferenceFrames } from '../memory/reference_store.js';
+>>>>>>> fee6110 (iamge gen improvements)
 import {
   getCampaign,
   getEventCount,
@@ -324,7 +329,8 @@ router.post('/story/stage-vision', async (req, res) => {
       }
       if (generateImage && character_beat.scene_prompt) {
         try {
-          const imgResult = await generateSceneImage(character_beat.scene_prompt);
+          const charRefs = activeStorySession?.campaignId ? getReferenceFrames(activeStorySession.campaignId) : [];
+          const imgResult = await generateSceneImage(character_beat.scene_prompt, charRefs);
           if (imgResult?.imageUrl) imageUrl = imgResult.imageUrl;
         } catch (imgErr) {
           console.warn('[STORY] Character card image failed:', imgErr.message);
@@ -522,7 +528,9 @@ router.post('/story/beat', async (req, res) => {
 
     console.log('[BEAT] scene_prompt →', beat.scene_prompt);
 
-    const image = await generateSceneImage(beat.scene_prompt);
+    const refs = getReferenceFrames(campaignId);
+    console.log(`[BEAT] Reference frames: ${refs.length}`);
+    const image = await generateSceneImage(beat.scene_prompt, refs);
 
     const event = {
       action,

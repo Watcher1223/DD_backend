@@ -11,6 +11,7 @@ import { getMusicForMood, getAvailableMoods } from '../ai/lyria.js';
 import { detectDiceRoll } from '../vision/dice_detection.js';
 import { resolveCampaignId } from './resolve_campaign.js';
 import { isChromaEnabled, clearCampaignMemory } from '../memory/chroma.js';
+import { clearReferenceFrames } from '../memory/reference_store.js';
 import {
   getCampaign,
   appendEvent,
@@ -155,6 +156,7 @@ router.post('/campaign/reset', (req, res) => {
   }
   resetCampaign(campaignId);
   clearCampaignMemory(campaignId).catch(() => {});
+  clearReferenceFrames(campaignId);
   res.json({ ok: true, message: 'Campaign reset' });
 });
 
@@ -188,7 +190,11 @@ router.get('/health', (req, res) => {
     has_nanobanana: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.NANOBANANA_API_KEY),
     has_lyria: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.LYRIA_API_KEY),
     has_semantic_memory: isChromaEnabled(),
+<<<<<<< HEAD
     has_livekit: !!(process.env.LIVEKIT_URL && process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET),
+=======
+    has_subject_customization: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT),
+>>>>>>> fee6110 (iamge gen improvements)
   });
 });
 

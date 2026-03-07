@@ -11,6 +11,8 @@ import { analyzeCharacters } from '../vision/character_analysis.js';
 import { resolveCampaignId } from './resolve_campaign.js';
 import { createPairing, resolvePairing, pruneExpired } from '../utils/pairing.js';
 import { upsertAppearanceMemory } from '../memory/chroma.js';
+import { addReferenceFrame } from '../memory/reference_store.js';
+import { parseFrame } from '../utils/media.js';
 import {
   upsertSessionProfile,
   getSessionProfiles,
@@ -34,12 +36,44 @@ async function analyzeAndStore(frame, campaignId) {
     upsertAppearanceMemory(campaignId, person, analysis.setting).catch(() => {});
   }
 
+  storeReferenceFrame(frame, campaignId, analysis.people);
+
   return {
     people: analysis.people,
     setting: analysis.setting,
     stored: analysis.people.length,
     elapsed_ms: Date.now() - startTime,
   };
+}
+
+/**
+ * Save the raw camera frame as a subject reference for Imagen Customization.
+ * Uses the first detected person's description as the subject label.
+ */
+function storeReferenceFrame(frame, campaignId, people) {
+  if (people.length === 0) return;
+  try {
+    const { data, mimeType } = parseFrame(frame);
+    const primary = people[0];
+    const desc = buildSubjectDescription(primary);
+    addReferenceFrame(campaignId, data, mimeType, desc);
+  } catch (err) {
+    console.warn('[CAMERA] Failed to store reference frame:', err.message);
+  }
+}
+
+/**
+ * Build a concise subject description from the camera analysis for Imagen's subjectDescription field.
+ * @param {{ label?: string, hair?: string, clothing?: string, features?: string, age_range?: string }} person
+ * @returns {string}
+ */
+function buildSubjectDescription(person) {
+  const parts = [];
+  if (person.age_range) parts.push(person.age_range);
+  if (person.hair) parts.push(`${person.hair} hair`);
+  if (person.clothing) parts.push(`wearing ${person.clothing}`);
+  if (person.features) parts.push(person.features);
+  return parts.length > 0 ? parts.join(', ') : 'a person';
 }
 
 // ── POST /api/camera/analyze — Local webcam analysis ──
