@@ -672,6 +672,23 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 
 ---
 
+## End-to-end stage flow (demo checklist)
+
+Use this checklist to verify the full affective bedtime story flow locally (Segment H). Ensure WebSocket is subscribed to `story_audio` **before** calling `POST /api/story/start`.
+
+1. **Theme from voice:** Call `POST /api/story/set-theme` with `{ "themeDescription": "bedtime story in the forest" }` (or start with `themeDescription` in `POST /api/story/start`). Confirm response includes a theme (e.g. `magical forest`).
+2. **Start session:** Call `POST /api/story/start`. Confirm Lyria PCM chunks arrive on the WebSocket (`audio_chunk` messages) and music plays.
+3. **Narration:** Call `POST /api/story/beat` with `{ "action": "The hero finds a cozy cave" }`. Confirm `narration`, `scene_prompt`, and optional `narrationAudioUrl` / `language`.
+4. **Yawn to music:** Send a camera frame (or `POST /api/music/update` with `{ "detected_events": ["yawn"] }`). Confirm music softens (lullaby / lower BPM).
+5. **Laugh to music:** Send `POST /api/music/update` with `{ "detected_events": ["laugh"] }`. Confirm music becomes brighter.
+6. **Doll as protagonist:** Call `POST /api/story/detect-object` with a frame containing a toy; then `POST /api/story/set-protagonist` with the returned `protagonist_description`; then `POST /api/story/beat`. Confirm narration and `scene_prompt` describe the doll as hero.
+7. **New person (judge):** Call `POST /api/story/stage-vision` with a frame that has one more person than the previous call. Confirm `new_entrant: true`, `character_beat` with `narration` (and optional `imageUrl`).
+8. **Multi-language:** Call `POST /api/story/set-language` with `{ "language": "es" }`; then `POST /api/story/beat`. Confirm `narration` is in Spanish and `narrationAudioUrl` includes `&lang=es`.
+
+**Test scripts (per-segment):** Run `npm run test:gemini` for theme, character-injection, beat+protagonist, beat+language. Vision tests (emotion, stage-vision, object) require a fixture image in `scripts/fixtures/sample.png` or `FIXTURE_IMAGE_BASE64`. If Gemini API quota is exceeded, re-run after the suggested retry window.
+
+---
+
 ## Design checklist for real data
 
 - [ ] Call `GET /api/health` on load and use `has_gemini`, `has_vision`, `has_speech`, `has_nanobanana`, `has_lyria`, `has_semantic_memory` to adapt UI (labels, disabled features, or “demo mode”).

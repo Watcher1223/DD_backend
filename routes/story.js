@@ -119,8 +119,9 @@ router.post('/story/start', async (req, res) => {
 
 /**
  * POST /api/music/update
- * Body: { theme?, genre?, mood?, intensity?, emotion? }
+ * Body: { theme?, genre?, mood?, intensity?, emotion?, detected_events? }
  * Updates Lyria RealTime prompts when session is active (with throttling).
+ * When detected_events includes yawn/laugh/scared, stage-event overrides apply (lullaby/upbeat/tense).
  */
 router.post('/music/update', (req, res) => {
   if (!activeStorySession) {
@@ -138,16 +139,24 @@ router.post('/music/update', (req, res) => {
     intensity: req.body?.intensity,
     emotion: req.body?.emotion ?? 'neutral',
     storyEnergy: req.body?.storyEnergy ?? req.body?.story_energy ?? storySession?.story_energy,
+    detected_events: req.body?.detected_events,
   };
 
-  const { weightedPrompts, theme, mood, intensity } = generateMusicPrompts(scene);
+  const result = generateMusicPrompts(scene);
+  const { weightedPrompts, theme, mood, intensity, stageEventConfig } = result;
 
   if (!shouldUpdatePrompts({ theme, mood, intensity })) {
     return res.status(200).json({ ok: true, skipped: true, reason: 'throttled' });
   }
 
-  activeStorySession.handle
+  const handle = activeStorySession.handle;
+  handle
     .updatePrompts(weightedPrompts)
+    .then(() => {
+      if (stageEventConfig) {
+        return handle.setMusicGenerationConfig(stageEventConfig);
+      }
+    })
     .then(() => {
       markPromptsApplied({ theme, mood, intensity });
       res.json({ ok: true, updated: true });

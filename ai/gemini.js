@@ -141,7 +141,7 @@ export async function extractThemeFromDescription(description) {
       const theme = parsed?.theme && typeof parsed.theme === 'string' ? parsed.theme.trim().toLowerCase() : '';
       const matched = THEME_KEYS.find((k) => k.toLowerCase() === theme);
       if (matched) return matched;
-      return normalizeThemeFallback(theme || trimmed);
+      return normalizeThemeFallback(trimmed);
     }
   } catch (err) {
     console.warn('[GEMINI] Theme extract failed:', err.message);
