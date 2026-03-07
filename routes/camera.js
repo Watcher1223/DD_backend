@@ -1,7 +1,9 @@
 // ═══════════════════════════════════════════════
-// CAMERA ROUTES — Webcam frame analysis endpoints
+// CAMERA ROUTES — Unified webcam frame analysis
 // Accepts camera frames, runs Gemini Vision for
-// character analysis, and persists profiles.
+// character analysis, persists profiles, and
+// performs stage-vision new-entrant detection +
+// character injection when a story session is active.
 // Supports local webcam and remote phone camera
 // via pairing codes.
 // ═══════════════════════════════════════════════
@@ -11,9 +13,13 @@ import sharp from 'sharp';
 import { analyzeCharacters } from '../vision/character_analysis.js';
 import { resolveCampaignId } from './resolve_campaign.js';
 import { createPairing, resolvePairing, pruneExpired } from '../utils/pairing.js';
-import { upsertAppearanceMemory } from '../memory/chroma.js';
-import { addReferenceFrame, setCanonicalDescription } from '../memory/reference_store.js';
+import { upsertAppearanceMemory, queryStageIdentityByDescription, isReidentificationMatch, upsertStageIdentity } from '../memory/chroma.js';
+import { addReferenceFrame, setCanonicalDescription, getReferenceFrames } from '../memory/reference_store.js';
 import { parseFrame } from '../utils/media.js';
+import { processAnalyzedFrame } from '../workers/stage_vision_worker.js';
+import { getActiveStorySession, applyCharacterInjectionToLyria } from './story.js';
+import { generateCharacterInjectionBeat } from '../ai/gemini.js';
+import { generateSceneImage } from '../ai/nanobanana.js';
 import {
   upsertSessionProfile,
   getSessionProfiles,
@@ -146,7 +152,16 @@ router.post('/camera/analyze', async (req, res) => {
   try {
     const result = await analyzeAndStore(frame, campaignId);
     broadcastProfileUpdate(req, campaignId, result, 'local');
-    res.json(result);
+
+    const stageInjection = await runStageVisionIfActive(
+      result, campaignId, req.app.locals.broadcast, { generateImage: req.body.generateImage },
+    );
+
+    res.json({
+      ...result,
+      character_beat: stageInjection?.character_beat || undefined,
+      imageUrl: stageInjection?.imageUrl || undefined,
+    });
   } catch (err) {
     if (isEmptyFrameError(err)) {
       return res.status(202).json({ ready: false, message: 'Camera not ready yet — waiting for video stream' });
@@ -211,7 +226,16 @@ router.post('/camera/remote/:code', async (req, res) => {
   try {
     const result = await analyzeAndStore(frame, campaignId);
     broadcastProfileUpdate(req, campaignId, result, 'phone');
-    res.json(result);
+
+    const stageInjection = await runStageVisionIfActive(
+      result, campaignId, req.app.locals.broadcast, { generateImage: req.body.generateImage },
+    );
+
+    res.json({
+      ...result,
+      character_beat: stageInjection?.character_beat || undefined,
+      imageUrl: stageInjection?.imageUrl || undefined,
+    });
   } catch (err) {
     if (isEmptyFrameError(err)) {
       return res.status(202).json({ ready: false, message: 'Camera not ready yet — waiting for video stream' });
@@ -221,6 +245,84 @@ router.post('/camera/remote/:code', async (req, res) => {
     res.status(status).json({ error: 'Character analysis failed', details: err.message });
   }
 });
+
+/**
+ * If a story session is active, run stage-vision new-entrant detection using the
+ * already-fetched analysis results (no second Gemini call). On new entrant, trigger
+ * character injection beat, optional image generation, and Lyria update.
+ * @param {{ people: Array, setting?: string }} analysis - Pre-computed Gemini Vision result
+ * @param {number} campaignId
+ * @param {(msg: string) => void} broadcast
+ * @param {{ generateImage?: boolean }} [opts]
+ * @returns {Promise<{ character_beat?: object, imageUrl?: string } | null>}
+ */
+async function runStageVisionIfActive(analysis, campaignId, broadcast, opts = {}) {
+  const session = getActiveStorySession();
+  if (!session || String(session.campaignId) !== String(campaignId)) return null;
+
+  const stageResult = processAnalyzedFrame(analysis, session, broadcast);
+  if (!stageResult.new_entrant || !stageResult.new_entrant_description) return null;
+
+  return handleNewEntrant(session, stageResult, campaignId, broadcast, opts.generateImage);
+}
+
+/**
+ * Handle a newly detected entrant: re-id check, character injection beat,
+ * optional image generation, WebSocket broadcast, and Lyria update.
+ */
+async function handleNewEntrant(session, stageResult, campaignId, broadcast, generateImage) {
+  let character_beat = null;
+  let imageUrl = null;
+  const desc = stageResult.new_entrant_description;
+  const context = session.lastSetting || '';
+
+  const matches = await queryStageIdentityByDescription(campaignId, desc, 3);
+  if (matches.length > 0 && isReidentificationMatch(matches[0].distance)) {
+    const m = matches[0];
+    character_beat = {
+      narration: m.metadata?.narration || 'A familiar traveler returned to the camp.',
+      scene_prompt: m.metadata?.scene_prompt || 'Gentle bedtime illustration of a friendly traveler, soft lighting, dreamy, watercolor style',
+    };
+  }
+
+  if (!character_beat) {
+    character_beat = await generateCharacterInjectionBeat(desc, context);
+    await upsertStageIdentity(campaignId, `judge_${stageResult.people_count}`, desc, {
+      characterSkin: 'traveler',
+      narration: character_beat.narration,
+      scene_prompt: character_beat.scene_prompt,
+    });
+  }
+
+  if (generateImage && character_beat.scene_prompt) {
+    try {
+      const refs = getReferenceFrames(campaignId);
+      const imgResult = await generateSceneImage(character_beat.scene_prompt, refs, campaignId);
+      if (imgResult?.imageUrl) imageUrl = imgResult.imageUrl;
+    } catch (imgErr) {
+      console.warn('[CAMERA] Character card image failed:', imgErr.message);
+    }
+  }
+
+  if (broadcast && character_beat) {
+    broadcast(JSON.stringify({
+      type: 'character_injection',
+      narration: character_beat.narration,
+      scene_prompt: character_beat.scene_prompt,
+      imageUrl: imageUrl || undefined,
+      new_entrant_description: desc,
+    }));
+  }
+
+  await applyCharacterInjectionToLyria(session, character_beat);
+
+  const v2vPrompt = `A hero, a magical doll, and ${desc} in a ${session.userTheme || 'bedtime'} setting.`;
+  if (broadcast) {
+    broadcast(JSON.stringify({ type: 'v2v_prompt_updated', prompt: v2vPrompt }));
+  }
+
+  return { character_beat, imageUrl };
+}
 
 /**
  * Check if a raw frame string is obviously empty (camera not producing pixels yet).

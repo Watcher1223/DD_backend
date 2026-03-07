@@ -1,16 +1,15 @@
 // ═══════════════════════════════════════════════
 // LIVEKIT ROUTES — Token API for real-time video
 // POST /api/livekit/token — JWT for room join (publisher or viewer)
+//
+// NOTE: POST /api/livekit/vision-frame is kept for backward compatibility
+// but delegates to the unified camera analysis pipeline in routes/camera.js.
+// New frontends should call POST /api/camera/analyze instead.
 // ═══════════════════════════════════════════════
 
 import { Router } from 'express';
 import { AccessToken } from 'livekit-server-sdk';
-import { getActiveStorySession, applyCharacterInjectionToLyria } from './story.js';
-import { processFrame } from '../workers/stage_vision_worker.js';
-import { generateCharacterInjectionBeat } from '../ai/gemini.js';
-import { generateSceneImage } from '../ai/nanobanana.js';
-import { getReferenceFrames } from '../memory/reference_store.js';
-import { queryStageIdentityByDescription, isReidentificationMatch, upsertStageIdentity } from '../memory/chroma.js';
+import { getActiveStorySession } from './story.js';
 
 const router = Router();
 
@@ -130,85 +129,21 @@ router.post('/livekit/ingest-started', (req, res) => {
 });
 
 /**
- * POST /api/livekit/vision-frame
- * Send a frame from the LiveKit stream (client captures from published track and POSTs every 500ms or so).
- * Server runs stage vision, updates session state, broadcasts stage_vision_tick; on new entrant runs character injection and Lyria update.
- * Body: { frame: string (base64), generateImage?: boolean }
+ * POST /api/livekit/vision-frame (LEGACY — delegates to POST /api/camera/analyze)
+ * Kept for backward compatibility. New clients should call /api/camera/analyze directly.
+ * Rewrites the request to include campaignId from the active story session, then
+ * forwards to the unified camera analysis endpoint which handles both profile
+ * storage and stage-vision new-entrant detection in a single Gemini call.
  */
-router.post('/livekit/vision-frame', async (req, res) => {
+router.post('/livekit/vision-frame', (req, res, next) => {
   const session = getActiveStorySession();
   if (!session) {
     return res.status(409).json({ error: 'No active story session', message: 'Call POST /api/story/start first.' });
   }
-  const { frame, generateImage } = req.body || {};
-  if (!frame || typeof frame !== 'string') {
-    return res.status(400).json({ error: 'frame is required (base64 encoded image)' });
-  }
-
-  const broadcast = req.app.locals.broadcast;
-
-  try {
-    const result = await processFrame(frame, session, broadcast);
-
-    let character_beat = null;
-    let imageUrl = null;
-
-    if (result.new_entrant && result.new_entrant_description) {
-      const context = session.lastSetting || '';
-      const matches = await queryStageIdentityByDescription(session.campaignId, result.new_entrant_description, 3);
-      if (matches.length > 0 && isReidentificationMatch(matches[0].distance)) {
-        const m = matches[0];
-        character_beat = {
-          narration: m.metadata?.narration || 'A familiar traveler returned to the camp.',
-          scene_prompt: m.metadata?.scene_prompt || 'Gentle bedtime illustration of a friendly traveler, soft lighting, dreamy, watercolor style',
-        };
-      }
-      if (!character_beat) {
-        character_beat = await generateCharacterInjectionBeat(result.new_entrant_description, context);
-        await upsertStageIdentity(session.campaignId, `judge_${result.people_count}`, result.new_entrant_description, {
-          characterSkin: 'traveler',
-          narration: character_beat.narration,
-          scene_prompt: character_beat.scene_prompt,
-        });
-      }
-      if (generateImage && character_beat.scene_prompt) {
-        try {
-          const lkRefs = getReferenceFrames(session.campaignId);
-          const imgResult = await generateSceneImage(character_beat.scene_prompt, lkRefs, session.campaignId);
-          if (imgResult?.imageUrl) imageUrl = imgResult.imageUrl;
-        } catch (imgErr) {
-          console.warn('[LIVEKIT] Character card image failed:', imgErr.message);
-        }
-      }
-      if (broadcast && character_beat) {
-        broadcast(
-          JSON.stringify({
-            type: 'character_injection',
-            narration: character_beat.narration,
-            scene_prompt: character_beat.scene_prompt,
-            imageUrl: imageUrl || undefined,
-            new_entrant_description: result.new_entrant_description,
-          })
-        );
-      }
-      await applyCharacterInjectionToLyria(session, character_beat);
-      const v2vPrompt = `A hero, a magical doll, and ${result.new_entrant_description} in a ${session.userTheme || 'bedtime'} setting.`;
-      if (broadcast) {
-        broadcast(JSON.stringify({ type: 'v2v_prompt_updated', prompt: v2vPrompt }));
-      }
-    }
-
-    res.json({
-      people_count: result.people_count,
-      new_entrant: result.new_entrant,
-      character_beat: character_beat || undefined,
-      imageUrl: imageUrl || undefined,
-    });
-  } catch (err) {
-    console.error('[LIVEKIT] Vision-frame failed:', err.message);
-    const status = err.message?.includes('required') || err.message?.includes('Gemini') ? 503 : 500;
-    res.status(status).json({ error: 'Vision frame failed', details: err.message });
-  }
+  req.body = req.body || {};
+  req.body.campaignId = session.campaignId;
+  req.url = '/api/camera/analyze';
+  req.app.handle(req, res, next);
 });
 
 export default router;

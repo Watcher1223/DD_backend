@@ -1,10 +1,10 @@
 // ═══════════════════════════════════════════════
 // STAGE VISION WORKER — Process frames from LiveKit (or client-sent) stream
 // Runs analyzeStageVision, updates session state, broadcasts stage_vision_tick.
-// Invoked by POST /api/livekit/vision-frame or by a future server-side frame pipeline.
+// Invoked by POST /api/camera/analyze (unified) or POST /api/livekit/vision-frame (legacy).
 // ═══════════════════════════════════════════════
 
-import { analyzeStageVision } from '../vision/stage_vision.js';
+import { analyzeStageVision, detectNewEntrant } from '../vision/stage_vision.js';
 
 /**
  * Process one frame: run stage vision, update session state, broadcast stage_vision_tick.
@@ -18,7 +18,28 @@ export async function processFrame(frameBase64, session, broadcast) {
   const prevLabels = session.lastSeenLabels ?? new Set();
 
   const result = await analyzeStageVision(frameBase64, prevCount, prevLabels);
+  return applyStageResult(result, session, broadcast);
+}
 
+/**
+ * Same as processFrame but accepts pre-computed analysis results to avoid a duplicate Gemini call.
+ * @param {{ people: Array, setting?: string }} analysis - Result from analyzeCharacters (already fetched)
+ * @param {object} session - Active story session (mutated)
+ * @param {(message: string) => void} broadcast - WebSocket broadcast function
+ * @returns {{ people_count: number, new_entrant: boolean, new_entrant_description?: string, setting?: string }}
+ */
+export function processAnalyzedFrame(analysis, session, broadcast) {
+  const prevCount = session.lastSeenPeopleCount ?? 0;
+  const prevLabels = session.lastSeenLabels ?? new Set();
+
+  const result = detectNewEntrant(analysis, prevCount, prevLabels);
+  return applyStageResult(result, session, broadcast);
+}
+
+/**
+ * Update session state and broadcast a stage_vision_tick from a detection result.
+ */
+function applyStageResult(result, session, broadcast) {
   session.lastSeenPeopleCount = result.people.length;
   session.lastSeenLabels = new Set(result.people.map((p) => p.label).filter(Boolean));
   if (result.setting) session.lastSetting = result.setting;
