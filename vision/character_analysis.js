@@ -38,7 +38,7 @@ Respond with ONLY valid JSON in this exact format:
       "features": "distinguishing features like glasses, freckles, etc",
       "skin_tone": "natural skin tone description (e.g. light, medium, olive, tan, brown, dark brown)",
       "age_range": "estimated age range like 5-7",
-      "face_box": { "x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0 }  // normalized 0.0-1.0
+      "face_box": { "x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0 }
     }
   ],
   "setting": "brief description of the environment"
@@ -84,7 +84,7 @@ export async function analyzeCharacters(frameBase64) {
       }],
       generationConfig: {
         temperature: 0.2,
-        maxOutputTokens: 1024,
+        maxOutputTokens: 2048,
         responseMimeType: 'application/json',
       },
     }),

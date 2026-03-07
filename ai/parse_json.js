@@ -18,7 +18,9 @@ export function parseGeminiJson(raw, defaults) {
   if (codeBlockMatch) {
     text = codeBlockMatch[1].trim();
   }
-  // Otherwise strip leading/trailing prose (e.g. "Here is the JSON requested:")
+  // Strip // comments before brace-trimming so trailing braces aren't lost
+  text = stripJsonComments(text);
+  // Strip leading/trailing prose (e.g. "Here is the JSON requested:")
   const firstBrace = text.indexOf('{');
   if (firstBrace !== -1) {
     text = text.slice(firstBrace);
@@ -57,7 +59,21 @@ function fixNewlinesInStrings(text) {
 }
 
 /**
+ * Strip single-line // comments from JSON text that Gemini occasionally produces.
+ * Only strips comments that appear outside of string values.
+ * @param {string} text
+ * @returns {string}
+ */
+function stripJsonComments(text) {
+  return text.replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n}\]]*/g, (match, str) =>
+    str ? str : '',
+  );
+}
+
+/**
  * If the model output was truncated (e.g. mid-string), close the string and add missing keys.
+ * Only injects defaults for keys NOT already present in the truncated output so that
+ * partially-written model values aren't silently overwritten by generic fallbacks.
  * @param {string} text - Truncated JSON string
  * @param {object} [defaults] - Default key-value pairs to append when repairing
  * @returns {string|null} Repaired JSON string, or null if unrecoverable
@@ -69,12 +85,25 @@ function repairTruncatedJson(text, defaults) {
   if (!out.endsWith('}')) {
     if (!out.trimEnd().endsWith('"')) out += '"';
     if (defaults) {
-      const pairs = Object.entries(defaults)
-        .map(([k, v]) => `"${k}": ${JSON.stringify(v)}`)
-        .join(', ');
-      out += (out.trimEnd().endsWith(',') ? ' ' : ', ') + pairs;
+      const missingPairs = getMissingDefaultPairs(out, defaults);
+      if (missingPairs.length) {
+        out += (out.trimEnd().endsWith(',') ? ' ' : ', ') + missingPairs.join(', ');
+      }
     }
     out += '}';
   }
   return out;
+}
+
+/**
+ * Return serialized key-value pairs from defaults whose keys don't already
+ * appear in the (possibly truncated) JSON text.
+ * @param {string} partialJson
+ * @param {object} defaults
+ * @returns {string[]}
+ */
+function getMissingDefaultPairs(partialJson, defaults) {
+  return Object.entries(defaults)
+    .filter(([k]) => !partialJson.includes(`"${k}"`))
+    .map(([k, v]) => `"${k}": ${JSON.stringify(v)}`);
 }

@@ -236,7 +236,7 @@ export async function generateBedtimeStoryBeat(playerAction, campaign, storySess
         contents: [{ parts: [{ text: userPrompt }] }],
         generationConfig: {
           temperature: 0.8,
-          maxOutputTokens: 1024,
+          maxOutputTokens: 2048,
           responseMimeType: 'application/json',
         },
       }),
