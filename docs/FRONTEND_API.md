@@ -378,13 +378,14 @@ Transcribe audio recordings using Gemini multimodal. The transcript can be used 
 
 ### `POST /api/speech/transcribe`
 
-Transcribe a recorded audio clip to text.
+Transcribe a recorded audio clip to text. Optionally detect the spoken language (for “speak in Swahili → story in Swahili” flow).
 
 **Request body:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `audio` | string | yes | Base64-encoded audio. Can include the `data:audio/...;base64,` prefix or be raw base64. Supports webm, ogg, mp4, wav. |
+| `detectLanguage` | boolean | no | If `true`, response includes `detectedLanguage` (ISO 639-1 code, e.g. `sw`, `ru`, `es`). Use with `POST /api/story/set-language` and beat so the story continues in the spoken language. |
 
 **Response (200):**
 
@@ -395,10 +396,21 @@ Transcribe a recorded audio clip to text.
 }
 ```
 
+With `detectLanguage: true`:
+
+```json
+{
+  "transcript": "Endelea na hadithi",
+  "detectedLanguage": "sw",
+  "elapsed_ms": 920
+}
+```
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `transcript` | string | Transcribed text. Empty string if no speech was detected. |
 | `elapsed_ms` | number | Server-side latency in ms. |
+| `detectedLanguage` | string | Present when `detectLanguage: true`. ISO 639-1 code (e.g. `en`, `sw`, `ru`, `es`). Use for `POST /api/story/set-language` and then `POST /api/story/beat` with `action: transcript`. |
 
 **Errors:**
 
@@ -531,7 +543,10 @@ Returns Lyria chunk count and session state (for debugging no-audio). **Response
 
 Bedtime story beat: Gemini generates narration using the configured child profile, learning goals, stored camera appearances, and current story energy. The backend validates safety, generates an illustration, persists the page, and updates Lyria prompts when a story session is active.
 
-**Request body:** `{ "action": "string", "campaignId": 1 }`
+**Request body:** `{ "action": "string", "campaignId": 1, "language": "sw" }`
+
+- **`action`** (required) — What happens next (e.g. "The hero finds a cozy cave"). You can also request a language switch in the action text (e.g. "Continue the story in Swahili" or "Tell it in Russian"); the backend infers the language and uses it for this beat and for TTS, and keeps that language for subsequent beats until the user asks for another.
+- **`language`** (optional) — ISO 639-1 code for narration and TTS (e.g. `sw` Swahili, `ru` Russian, `es` Spanish). Overridden if the action text requests a different language (e.g. "in Swahili").
 
 **Response (200):**
 
@@ -560,6 +575,8 @@ Bedtime story beat: Gemini generates narration using the configured child profil
   "event_number": 3
 }
 ```
+
+The response also includes **`narrationAudioUrl`** (same-origin TTS URL with `&lang=<code>` when not English) and **`language`** (the code used for this beat).
 
 **Errors:**
 
@@ -696,7 +713,7 @@ Use this checklist to verify the full affective bedtime story flow locally (Segm
 5. **Laugh to music:** Send `POST /api/music/update` with `{ "detected_events": ["laugh"] }`. Confirm music becomes brighter.
 6. **Doll as protagonist:** Call `POST /api/story/detect-object` with a frame containing a toy; then `POST /api/story/set-protagonist` with the returned `protagonist_description`; then `POST /api/story/beat`. Confirm narration and `scene_prompt` describe the doll as hero.
 7. **New person (judge):** Call `POST /api/story/stage-vision` with a frame that has one more person than the previous call. Confirm `new_entrant: true`, `character_beat` with `narration` (and optional `imageUrl`).
-8. **Multi-language:** Call `POST /api/story/set-language` with `{ "language": "es" }`; then `POST /api/story/beat`. Confirm `narration` is in Spanish and `narrationAudioUrl` includes `&lang=es`.
+8. **Multi-language:** Call `POST /api/story/set-language` with `{ "language": "es" }`; then `POST /api/story/beat`. Confirm `narration` is in Spanish and `narrationAudioUrl` includes `&lang=es`. Alternatively, send a beat with action **"Continue the story in Swahili"** or **"Tell it in Russian"**; the backend infers the language and returns narration + TTS in that language (Swahili, Russian, and many other ISO 639-1 codes are supported).
 
 **Test scripts (per-segment):** Run `npm run test:gemini` for theme, character-injection, beat+protagonist, beat+language. Vision tests (emotion, stage-vision, object) require a fixture image in `scripts/fixtures/sample.png` or `FIXTURE_IMAGE_BASE64`. If Gemini API quota is exceeded, re-run after the suggested retry window.
 

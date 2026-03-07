@@ -30,6 +30,12 @@ app.use(express.json({ limit: '10mb' })); // Large limit for webcam frames
 // Static files (test page)
 app.use(express.static('public'));
 
+// Redirect trailing-dot URL (some browsers/extensions request test-story-audio.html. → 404)
+app.get('/test-story-audio.html.', (req, res) => res.redirect(302, '/test-story-audio.html'));
+
+// Avoid 404 for favicon (browsers request it automatically)
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
 // ── WebSocket setup ──
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });

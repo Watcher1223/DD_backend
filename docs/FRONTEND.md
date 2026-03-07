@@ -111,6 +111,9 @@ A full working example (including queueing and planar option) is in **`public/te
 **Alternative: Overshoot (or any vision) → music without hardcoding**  
 If you use **Overshoot** (or another real-time vision API) in the frontend to detect laughs, yawns, etc., send the **raw text result** to **`POST /api/story/vision-event`** with body `{ text: "<result>" }`. The backend maps that text to `emotion`, `mood`, `intensity`, and `detected_events` (e.g. "laugh" → upbeat, "yawn" → lullaby) and updates Lyria when a story session is active. Use a **single generic prompt** in Overshoot, e.g. *"In one word or short phrase, what is the person doing or feeling? Examples: laughing, yawning, scared, happy, sleepy, neutral, excited, sad."* No need to hardcode mood logic in the frontend — the backend owns the mapping.
 
+**Overshoot for object / doll detection**  
+Overshoot can also describe what it sees (e.g. prompt *"show me what you see"* or *"Describe any toy, doll, or stuffed animal in a few words, or say 'no toy'."*). Send that result to **`POST /api/story/vision-object`** with body `{ text: result.result }`. The backend sets the story protagonist to the description (so the next story beat is about that object), or clears it when the text means no toy (e.g. "no toy", "none"). You can run two Overshoot instances: one for mood → `vision-event`, one for objects → `vision-object`.
+
 While the session is active, you can also send **`POST /api/music/update`** with body (all optional):
 
 - `theme` — e.g. `"under the sea"`, `"fairy tale"`
@@ -125,9 +128,15 @@ Updates are throttled (theme/mood change or intensity delta &gt; 0.15). Response
 - **`POST /api/story/stop`** — End the session; server sends `music_session_ended` to subscribers.
 - **`GET /api/story/status`** — `{ "active": true, "userTheme": "magical forest" }` or `{ "active": false, "userTheme": null }`. `userTheme` is the theme extracted from the user’s description (voice/text).
 - **`GET /api/story/debug`** — `{ "lyriaChunksReceived": N, "sessionActive": true }` (for debugging no-audio).
-- **`POST /api/story/beat`** — Body `{ action: "string" }`. Gemini generates a story beat and optional music update; returns `narration`, `theme`, `mood`, `emotion`, etc.
+- **`POST /api/story/beat`** — Body `{ action: "string" }`. Gemini generates a story beat and optional music update; returns `narration`, `theme`, `mood`, `emotion`, etc. You can also pass **`language`** (e.g. `sw`, `ru`, `es`) in the body, or **type it in the action** (e.g. "Continue the story in Swahili" or "Tell it in Russian"); the backend infers the language and uses it for that beat and TTS.
+- **`POST /api/story/set-language`** — Set narration language for the session. Body: `{ language: "sw" }` (Swahili), `"ru"` (Russian), `"es"` (Spanish), etc. Supports many ISO 639-1 codes (Swahili, Russian, Arabic, Chinese, Hindi, and more).
 - **`POST /api/story/emotion-from-camera`** — Send a webcam frame (base64); **Gemini Vision** infers emotion/mood/intensity (theme comes from the user’s description set at start or via set-theme). If `updateMusic: true` and a story session is active, the backend updates Lyria using the session’s theme + camera emotion. Body: `{ frame: "<base64>", updateMusic?: boolean }`. Response: `{ emotion, mood, theme, intensity, musicUpdated }`.
 - **`POST /api/story/vision-event`** — Send a **free-text vision result** (e.g. from Overshoot) to drive music without hardcoding. Body: `{ text: "laugh" }` (or "yawn", "scared", "happy", "sleepy", "neutral", etc.). Backend maps text to emotion/mood/detected_events and updates Lyria when a story session is active. Response: `{ emotion, mood, theme, intensity, detected_events, musicUpdated }`.
+- **`POST /api/story/vision-object`** — Send a **free-text vision result** for **object detection** (e.g. Overshoot with prompt "show me what you see" or "describe any toy/doll"). Body: `{ text: "small brown bear" }`. Backend sets the story protagonist to that description so narration is about the object; if text is "no toy" / "none" / empty, protagonist is cleared. Response: `{ ok, protagonist_description, set }`.
+
+### Multi-language (Swahili, Russian, any language)
+
+You can tell the story in **Swahili, Russian, Spanish, or many other languages** in two ways: (1) **Set language for the session:** `POST /api/story/set-language` with body `{ "language": "sw" }` (Swahili), `"ru"` (Russian), `"es"` (Spanish), etc. (2) **Say it in the action:** Type **"Continue the story in Swahili"** or **"Tell it in Russian"** in the beat action; the backend detects the language, generates narration in that language (Gemini), and uses it for TTS. Supported codes include `sw`, `ru`, `es`, `fr`, `de`, `ja`, `ko`, `ar`, `zh`, `hi`, and many more (ISO 639-1).
 
 ### Batch music (one-shot WAV)
 
@@ -167,7 +176,11 @@ Updates are throttled (theme/mood change or intensity delta &gt; 0.15). Response
 | Stop story session      | `POST /api/story/stop` |
 | Emotion from camera → music | `POST /api/story/emotion-from-camera` (frame + updateMusic) |
 | Vision text → music (Overshoot, etc.) | `POST /api/story/vision-event` (body: `{ text }`) |
+| Vision text → protagonist (Overshoot objects) | `POST /api/story/vision-object` (body: `{ text }`) |
+| Set story language (Swahili, Russian, etc.) | `POST /api/story/set-language` (body: `{ language: "sw" }`) or type "in Swahili" in beat action |
 | One-shot music (WAV)    | `GET /api/music/generate?mood=...` |
 | Test story + audio      | Open `/test-story-audio.html` |
 
 Full API reference: **[FRONTEND_API.md](./FRONTEND_API.md)**.
+
+End-to-end story flow (judge theme, real-time setting, Ethan narrating as video, judge on stage, speak in Swahili): **[STORY_FLOW.md](./STORY_FLOW.md)**.

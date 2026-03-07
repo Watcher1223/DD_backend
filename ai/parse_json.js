@@ -13,9 +13,12 @@
  */
 export function parseGeminiJson(raw, defaults) {
   let text = (raw || '').trim();
-  const codeBlock = /^```(?:json)?\s*([\s\S]*?)```\s*$/;
-  const m = text.match(codeBlock);
-  if (m) text = m[1].trim();
+  // Strip markdown code block if present (anywhere in string, not only full match)
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    text = codeBlockMatch[1].trim();
+  }
+  // Otherwise strip leading/trailing prose (e.g. "Here is the JSON requested:")
   const firstBrace = text.indexOf('{');
   if (firstBrace !== -1) {
     text = text.slice(firstBrace);

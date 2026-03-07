@@ -20,6 +20,31 @@ const LANGUAGE_NAMES = {
   pt: 'Portuguese',
   ja: 'Japanese',
   ko: 'Korean',
+  sw: 'Swahili',
+  ru: 'Russian',
+  ar: 'Arabic',
+  zh: 'Chinese',
+  hi: 'Hindi',
+  nl: 'Dutch',
+  pl: 'Polish',
+  tr: 'Turkish',
+  vi: 'Vietnamese',
+  th: 'Thai',
+  id: 'Indonesian',
+  uk: 'Ukrainian',
+  he: 'Hebrew',
+  sv: 'Swedish',
+  no: 'Norwegian',
+  da: 'Danish',
+  fi: 'Finnish',
+  el: 'Greek',
+  ro: 'Romanian',
+  hu: 'Hungarian',
+  cs: 'Czech',
+  sk: 'Slovak',
+  bg: 'Bulgarian',
+  hr: 'Croatian',
+  sr: 'Serbian',
 };
 
 // System prompt that makes Gemini act as a D&D Dungeon Master
@@ -191,6 +216,8 @@ export async function generateBedtimeStoryBeat(playerAction, campaign, storySess
 
   if (language && LANGUAGE_NAMES[language]) {
     userPrompt = `Narrate in ${LANGUAGE_NAMES[language]}. All narration text must be in that language.\n\n` + userPrompt;
+  } else if (language && /^[a-z]{2,3}$/.test(language)) {
+    userPrompt = `Narrate in the language with ISO 639-1 code "${language}". All narration text must be in that language.\n\n` + userPrompt;
   }
 
   if (protagonist_description && String(protagonist_description).trim()) {

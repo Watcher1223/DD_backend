@@ -84,7 +84,13 @@ export async function analyzeEmotionFromFrame(frameBase64) {
     return DEFAULTS;
   }
 
-  const parsed = parseGeminiJson(text, DEFAULTS);
+  let parsed;
+  try {
+    parsed = parseGeminiJson(text, DEFAULTS);
+  } catch (e) {
+    console.warn('[EMOTION] Gemini response not valid JSON, using defaults:', e.message);
+    return { ...DEFAULTS, detected_events: [] };
+  }
   if (!parsed) return { ...DEFAULTS, detected_events: [] };
 
   const emotion = normalizeEmotion(parsed.emotion);

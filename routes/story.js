@@ -36,6 +36,46 @@ const router = Router();
 /** In-memory active bedtime story session: { handle, campaignId, userTheme } or null */
 let activeStorySession = null;
 
+/** Infer language code from action text (e.g. "continue the story in Swahili" -> "sw"). */
+function inferLanguageFromAction(action) {
+  if (!action || typeof action !== 'string') return null;
+  const t = action.toLowerCase().trim();
+  const langPhrases = [
+    [/in swahili|swahili/i, 'sw'],
+    [/in russian|russian/i, 'ru'],
+    [/in spanish|en español|spanish/i, 'es'],
+    [/in french|french|en français/i, 'fr'],
+    [/in german|german|auf deutsch/i, 'de'],
+    [/in italian|italian|in italiano/i, 'it'],
+    [/in portuguese|portuguese|em português/i, 'pt'],
+    [/in japanese|japanese|日本語/i, 'ja'],
+    [/in korean|korean|한국어/i, 'ko'],
+    [/in arabic|arabic|العربية/i, 'ar'],
+    [/in chinese|chinese|中文/i, 'zh'],
+    [/in hindi|hindi|हिन्दी/i, 'hi'],
+    [/in dutch|dutch|nederlands/i, 'nl'],
+    [/in polish|polish|po polsku/i, 'pl'],
+    [/in turkish|turkish|türkçe/i, 'tr'],
+    [/in vietnamese|vietnamese|tiếng việt/i, 'vi'],
+    [/in thai|thai|ไทย/i, 'th'],
+    [/in indonesian|indonesian|bahasa indonesia/i, 'id'],
+    [/in ukrainian|ukrainian|українська/i, 'uk'],
+    [/in hebrew|hebrew|עברית/i, 'he'],
+    [/in swedish|swedish|på svenska/i, 'sv'],
+    [/in norwegian|norwegian|på norsk/i, 'no'],
+    [/in danish|danish|på dansk/i, 'da'],
+    [/in finnish|finnish|suomeksi/i, 'fi'],
+    [/in greek|greek|ελληνικά/i, 'el'],
+    [/in romanian|romanian|în română/i, 'ro'],
+    [/in hungarian|hungarian|magyarul/i, 'hu'],
+    [/in english|english/i, 'en'],
+  ];
+  for (const [re, code] of langPhrases) {
+    if (re.test(t)) return code;
+  }
+  return null;
+}
+
 /** Return the current active story session (for LiveKit token and workers). */
 export function getActiveStorySession() {
   return activeStorySession;
@@ -453,6 +493,26 @@ router.post('/story/set-protagonist', (req, res) => {
 });
 
 /**
+ * POST /api/story/vision-object
+ * Accept a free-text vision result (e.g. from Overshoot "show me what you see" or "describe any toy") and set the story protagonist.
+ * Use when Overshoot detects objects: send result.result here. If the text means "no toy", protagonist is cleared.
+ * Body: { text: string }
+ */
+router.post('/story/vision-object', (req, res) => {
+  const raw = req.body?.text;
+  const text = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  const noObject = !text || /^(no|none|nothing|n\/?a|no toy|no doll|no object|don't see|don't have|can't see)/i.test(text) || text.length < 3;
+  if (activeStorySession) {
+    activeStorySession.protagonist_description = noObject ? null : (typeof raw === 'string' ? raw.trim() : '');
+  }
+  res.json({
+    ok: true,
+    protagonist_description: activeStorySession?.protagonist_description ?? null,
+    set: !noObject,
+  });
+});
+
+/**
  * POST /api/story/set-language
  * Set narration language for the active story session. Body: { language: string } (e.g. 'es', 'fr', 'en')
  */
@@ -569,11 +629,16 @@ router.post('/story/beat', async (req, res) => {
     const sessionProfiles = getSessionProfiles(campaignId);
     const memoryContext = await retrieveMemoryContext(campaignId, action);
     const protagonist_description = activeStorySession?.protagonist_description;
-    const language = activeStorySession?.language || req.body?.language || 'en';
+    const inferredLang = inferLanguageFromAction(action);
+    const language = activeStorySession?.language || inferredLang || req.body?.language || 'en';
+    if (inferredLang && activeStorySession) {
+      activeStorySession.language = inferredLang;
+    }
 
     console.log('[BEAT] Profiles:', sessionProfiles.length, sessionProfiles.map((p) => p.label));
     console.log('[BEAT] Chroma memory:', memoryContext ? `${memoryContext.length} chars` : 'none');
     if (protagonist_description) console.log('[BEAT] Protagonist:', protagonist_description);
+    if (language !== 'en') console.log('[BEAT] Language:', language);
 
     const beat = await generateSafeBedtimeStoryBeat(action, campaign, storySession, sessionProfiles, memoryContext, { protagonist_description, language });
 

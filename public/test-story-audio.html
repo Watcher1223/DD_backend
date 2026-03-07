@@ -70,7 +70,7 @@
 
   <section>
     <h2>Camera → character (stage vision)</h2>
-    <p class="sub">Send camera frames to stage vision. When you (or someone new) appear, the backend generates a story character and optional character card image.</p>
+    <p class="sub">Your face is stored first so the character card can look like you. When you appear, the backend generates a character and an optional image. <strong>Your face is embedded in that image only when Vertex Imagen subject customization is configured</strong> (Google Cloud project with Imagen 3); otherwise you get a text-only illustration.</p>
     <div class="row">
       <label><input type="checkbox" id="useStageVision" /> Run stage vision from camera (show me as character)</label>
     </div>
@@ -83,6 +83,37 @@
           <img id="stageVisionImage" alt="Character card" style="max-width:100%; max-height:200px; margin-top:0.5rem; border-radius:6px; display:none;" />
         </div>
       </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Camera → doll (story hero)</h2>
+    <p class="sub">Point the camera at a <strong>doll or stuffed toy</strong> (not phones). The backend detects it and sets it as the story protagonist so the narration is about your toy. Use "Next story beat" below to hear and see the story.</p>
+    <div class="row">
+      <label><input type="checkbox" id="useDollDetect" /> Detect my doll and use as story hero</label>
+    </div>
+    <div id="dollWrap" style="display:none; margin-top:0.5rem;">
+      <video id="dollVideo" autoplay playsinline muted style="width:160px; height:120px; background:#111; border-radius:6px;"></video>
+      <div id="dollResult" style="margin-top:0.25rem; font-size:0.85rem;">
+        <div id="dollProtagonist"></div>
+        <div id="dollLastDetect" style="font-size:0.8rem; color:#666;"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Progressive story (narration + image)</h2>
+    <p class="sub">Request a story beat to hear spoken narration and see a scene image. Music keeps playing in the background. <strong>To switch language, type it in the action</strong> (e.g. "Continue the story in Swahili" or "Tell it in Russian"); the next beat and TTS will use that language.</p>
+    <div style="margin-bottom:0.5rem;">
+      <label for="beatAction" style="font-size:0.85rem;">What happens next?</label>
+      <input type="text" id="beatAction" placeholder="e.g. The hero finds a cave — or: Continue in Swahili" style="width:100%; padding:0.5rem; margin-top:0.25rem; border-radius:6px; border:1px solid #ccc;" />
+    </div>
+    <div class="row">
+      <button id="btnBeat" class="mood">Next story beat</button>
+    </div>
+    <div id="beatWrap" style="display:none; margin-top:0.75rem;">
+      <div id="beatNarration" style="font-style:italic; margin-bottom:0.5rem;"></div>
+      <img id="beatImage" alt="Scene" style="max-width:100%; max-height:240px; border-radius:6px; display:none;" />
     </div>
   </section>
 
@@ -128,6 +159,16 @@
     const stageVisionCountEl = document.getElementById('stageVisionCount');
     const stageVisionNarrationEl = document.getElementById('stageVisionNarration');
     const stageVisionImageEl = document.getElementById('stageVisionImage');
+    const useDollDetectCheckbox = document.getElementById('useDollDetect');
+    const dollWrap = document.getElementById('dollWrap');
+    const dollVideo = document.getElementById('dollVideo');
+    const dollProtagonistEl = document.getElementById('dollProtagonist');
+    const dollLastDetectEl = document.getElementById('dollLastDetect');
+    const beatActionEl = document.getElementById('beatAction');
+    const btnBeat = document.getElementById('btnBeat');
+    const beatWrap = document.getElementById('beatWrap');
+    const beatNarrationEl = document.getElementById('beatNarration');
+    const beatImageEl = document.getElementById('beatImage');
 
     let ws = null;
     let audioContext = null;
@@ -139,6 +180,8 @@
     let emotionIntervalId = null;
     let stageVisionStream = null;
     let stageVisionIntervalId = null;
+    let dollStream = null;
+    let dollIntervalId = null;
 
     function setStatus(msg, type = '') {
       statusEl.textContent = msg;
@@ -265,6 +308,7 @@
               themeStatusEl.textContent = '';
               stopCameraEmotionLoop();
               stopStageVisionLoop();
+              stopDollLoop();
             } else if (msg.type === 'character_injection') {
               if (stageVisionNarrationEl) stageVisionNarrationEl.textContent = msg.narration || '';
               if (stageVisionImageEl) {
@@ -329,8 +373,17 @@
         btnSetTheme.disabled = false;
         if (data.userTheme) themeStatusEl.textContent = 'Theme: ' + data.userTheme;
         setStatus('Session started. Waiting for Lyria audio chunks…', 'playing');
+        // Ensure story session exists so "Next story beat" works (configure with defaults)
+        try {
+          await fetch(API + '/api/story/configure', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ childName: 'Story listener', childAge: 5 }),
+          });
+        } catch (_) {}
         if (useCameraCheckbox.checked) startCameraEmotionLoop();
         if (useStageVisionCheckbox.checked) startStageVisionLoop();
+        if (useDollDetectCheckbox && useDollDetectCheckbox.checked) startDollLoop();
       } catch (e) {
         setStatus('Request failed: ' + e.message, 'error');
         btnStart.disabled = false;
@@ -354,6 +407,7 @@
     btnStop.addEventListener('click', async () => {
       stopCameraEmotionLoop();
       stopStageVisionLoop();
+      stopDollLoop();
       try {
         await fetch(API + '/api/story/stop', { method: 'POST' });
         sessionActive = false;
@@ -399,6 +453,20 @@
       }
     }
 
+    function stopDollLoop() {
+      if (dollIntervalId) {
+        clearInterval(dollIntervalId);
+        dollIntervalId = null;
+      }
+      if (dollStream) {
+        dollStream.getTracks().forEach((t) => t.stop());
+        dollStream = null;
+      }
+      dollWrap.style.display = 'none';
+      if (dollProtagonistEl) dollProtagonistEl.textContent = '';
+      if (dollLastDetectEl) dollLastDetectEl.textContent = '';
+    }
+
     async function startStageVisionLoop() {
       stopStageVisionLoop();
       if (!sessionActive) return;
@@ -406,45 +474,59 @@
         stageVisionStream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: false });
         stageVisionVideo.srcObject = stageVisionStream;
         stageVisionWrap.style.display = 'block';
-        stageVisionCountEl.textContent = 'Camera on. Sending frames to stage vision every 5s…';
-      } catch (e) {
-        stageVisionCountEl.textContent = 'Camera error: ' + e.message;
-        return;
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = 320;
-      canvas.height = 240;
-      const ctx = canvas.getContext('2d');
-      const STAGE_VISION_INTERVAL_MS = 5000;
-
-      stageVisionIntervalId = setInterval(async () => {
-        if (!sessionActive || !stageVisionStream || !stageVisionVideo.videoWidth) return;
+        stageVisionCountEl.textContent = 'Camera on. Storing your face for the character card…';
+        // Let the video have a frame
+        await new Promise((r) => setTimeout(r, 400));
+        const canvas = document.createElement('canvas');
+        canvas.width = 320;
+        canvas.height = 240;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(stageVisionVideo, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
         try {
-          ctx.drawImage(stageVisionVideo, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-          const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
-          const res = await fetch(API + '/api/story/stage-vision', {
+          const analyzeRes = await fetch(API + '/api/camera/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ frame: base64, generateImage: true }),
+            body: JSON.stringify({ frame: base64 }),
           });
-          const data = await res.json();
-          if (res.ok) {
-            stageVisionCountEl.textContent = 'People: ' + (data.people_count ?? 0) + (data.new_entrant ? ' — New character!' : '');
-            if (data.character_beat && data.character_beat.narration) {
-              stageVisionNarrationEl.textContent = data.character_beat.narration;
-            }
-            if (data.imageUrl) {
-              stageVisionImageEl.src = data.imageUrl;
-              stageVisionImageEl.style.display = 'block';
-            }
-          } else {
-            stageVisionCountEl.textContent = 'Stage vision: ' + (data.details || data.error || res.status);
+          if (analyzeRes.ok) {
+            stageVisionCountEl.textContent = 'Face stored. Sending frames to stage vision every 5s…';
           }
-        } catch (e) {
-          stageVisionCountEl.textContent = 'Stage vision error: ' + e.message;
-        }
-      }, STAGE_VISION_INTERVAL_MS);
+        } catch (_) {}
+        const STAGE_VISION_INTERVAL_MS = 5000;
+
+        stageVisionIntervalId = setInterval(async () => {
+          if (!sessionActive || !stageVisionStream || !stageVisionVideo.videoWidth) return;
+          try {
+            ctx.drawImage(stageVisionVideo, 0, 0, canvas.width, canvas.height);
+            const frameDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            const frameBase64 = frameDataUrl.replace(/^data:image\/\w+;base64,/, '');
+            const res = await fetch(API + '/api/story/stage-vision', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ frame: frameBase64, generateImage: true }),
+            });
+            const data = await res.json();
+            if (res.ok) {
+              stageVisionCountEl.textContent = 'People: ' + (data.people_count ?? 0) + (data.new_entrant ? ' — New character!' : '');
+              if (data.character_beat && data.character_beat.narration) {
+                stageVisionNarrationEl.textContent = data.character_beat.narration;
+              }
+              if (data.imageUrl) {
+                stageVisionImageEl.src = data.imageUrl;
+                stageVisionImageEl.style.display = 'block';
+              }
+            } else {
+              stageVisionCountEl.textContent = 'Stage vision: ' + (data.details || data.error || res.status);
+            }
+          } catch (e) {
+            stageVisionCountEl.textContent = 'Stage vision error: ' + e.message;
+          }
+        }, STAGE_VISION_INTERVAL_MS);
+      } catch (e) {
+        stageVisionCountEl.textContent = 'Camera error: ' + e.message;
+      }
     }
 
     async function startCameraEmotionLoop() {
@@ -499,6 +581,119 @@
       if (sessionActive && useStageVisionCheckbox.checked) startStageVisionLoop();
       else if (!useStageVisionCheckbox.checked) stopStageVisionLoop();
     });
+
+    function startDollLoop() {
+      stopDollLoop();
+      if (!sessionActive) return;
+      (async () => {
+        try {
+          dollStream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: false });
+          dollVideo.srcObject = dollStream;
+          dollWrap.style.display = 'block';
+          if (dollProtagonistEl) dollProtagonistEl.textContent = 'Detecting doll…';
+          if (dollLastDetectEl) dollLastDetectEl.textContent = '';
+        } catch (e) {
+          if (dollProtagonistEl) dollProtagonistEl.textContent = 'Camera error: ' + e.message;
+          return;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = 320;
+        canvas.height = 240;
+        const ctx = canvas.getContext('2d');
+        const DOLL_INTERVAL_MS = 6000;
+
+        dollIntervalId = setInterval(async () => {
+          if (!sessionActive || !dollStream || !dollVideo.videoWidth) return;
+          try {
+            ctx.drawImage(dollVideo, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+            const res = await fetch(API + '/api/story/detect-object', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ frame: base64 }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              if (dollLastDetectEl) dollLastDetectEl.textContent = 'Detect error: ' + (data.details || data.error || '');
+              return;
+            }
+            const objs = data.objects || [];
+            if (dollLastDetectEl) dollLastDetectEl.textContent = objs.length ? 'Last: ' + objs.map((o) => o.name || o.description).join(', ') : 'No toy detected.';
+            const protagonist = data.protagonist_description;
+            if (protagonist && protagonist.trim()) {
+              const setRes = await fetch(API + '/api/story/set-protagonist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ protagonist_description: protagonist.trim() }),
+              });
+              const setData = await setRes.json();
+              if (setRes.ok && setData.protagonist_description) {
+                if (dollProtagonistEl) dollProtagonistEl.textContent = 'Hero: ' + setData.protagonist_description;
+              }
+            }
+          } catch (e) {
+            if (dollLastDetectEl) dollLastDetectEl.textContent = 'Error: ' + e.message;
+          }
+        }, DOLL_INTERVAL_MS);
+      })();
+    }
+
+    if (useDollDetectCheckbox) {
+      useDollDetectCheckbox.addEventListener('change', () => {
+        if (sessionActive && useDollDetectCheckbox.checked) startDollLoop();
+        else if (!useDollDetectCheckbox.checked) stopDollLoop();
+      });
+    }
+
+    if (btnBeat && beatActionEl) {
+      btnBeat.addEventListener('click', async () => {
+        if (!sessionActive) {
+          setStatus('Start the story session first.', 'error');
+          return;
+        }
+        const action = beatActionEl.value.trim() || 'The hero explores the forest';
+        btnBeat.disabled = true;
+        setStatus('Generating story beat…');
+        try {
+          const res = await fetch(API + '/api/story/beat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            setStatus('Beat failed: ' + (data.details || data.error || res.status), 'error');
+            btnBeat.disabled = false;
+            return;
+          }
+          if (beatWrap) beatWrap.style.display = 'block';
+          if (beatNarrationEl) beatNarrationEl.textContent = data.narration || '';
+          if (beatImageEl) {
+            const url = data.image?.imageUrl;
+            if (url) {
+              beatImageEl.src = url;
+              beatImageEl.style.display = 'block';
+            } else {
+              beatImageEl.removeAttribute('src');
+              beatImageEl.style.display = 'none';
+            }
+          }
+          setStatus('Playing narration…', 'playing');
+          if (data.narrationAudioUrl) {
+            const audio = new Audio(data.narrationAudioUrl);
+            audio.onended = () => { btnBeat.disabled = false; setStatus('Story beat done. Ask for the next one.'); };
+            audio.onerror = () => { btnBeat.disabled = false; setStatus('Narration play failed.', 'error'); };
+            audio.play().catch(() => { btnBeat.disabled = false; });
+          } else {
+            btnBeat.disabled = false;
+          }
+        } catch (e) {
+          setStatus('Request failed: ' + e.message, 'error');
+          btnBeat.disabled = false;
+        }
+      });
+    }
 
     btnSetTheme.addEventListener('click', async () => {
       const themeDescription = themeDescriptionEl.value.trim();

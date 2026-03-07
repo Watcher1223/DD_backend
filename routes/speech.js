@@ -5,27 +5,35 @@
 // ═══════════════════════════════════════════════
 
 import { Router } from 'express';
-import { transcribeAudio } from '../ai/transcribe.js';
+import { transcribeAudio, transcribeWithLanguage } from '../ai/transcribe.js';
 
 const router = Router();
 
 /**
  * POST /api/speech/transcribe
  * Accept a base64-encoded audio recording and return the transcript.
+ * Optionally detect the spoken language (for "speak in Swahili → story in Swahili").
  *
- * Body: { audio: string (base64) }
- * Response: { transcript: string, elapsed_ms: number }
+ * Body: { audio: string (base64), detectLanguage?: boolean }
+ * Response: { transcript: string, elapsed_ms: number, detectedLanguage?: string }
  */
 router.post('/speech/transcribe', async (req, res) => {
-  const { audio } = req.body;
+  const { audio, detectLanguage } = req.body;
   if (!audio) {
     return res.status(400).json({ error: 'audio is required (base64 encoded audio)' });
   }
 
   try {
     const startTime = Date.now();
+    if (detectLanguage) {
+      const { transcript, detectedLanguage: lang } = await transcribeWithLanguage(audio);
+      return res.json({
+        transcript,
+        detectedLanguage: lang,
+        elapsed_ms: Date.now() - startTime,
+      });
+    }
     const transcript = await transcribeAudio(audio);
-
     res.json({
       transcript,
       elapsed_ms: Date.now() - startTime,
