@@ -7,11 +7,14 @@
 // without breaking the core pipeline.
 // ═══════════════════════════════════════════════
 
-import { ChromaClient } from 'chromadb';
+import { ChromaClient, CloudClient } from 'chromadb';
 
+const CHROMA_API_KEY = process.env.CHROMADB_API_KEY || process.env.CHROMA_API_KEY;
 const CHROMA_HOST = process.env.CHROMA_HOST || 'localhost';
 const CHROMA_PORT = parseInt(process.env.CHROMA_PORT || '8000', 10);
 const CHROMA_SSL = process.env.CHROMA_SSL === 'true';
+const CHROMA_TENANT = process.env.CHROMA_TENANT;
+const CHROMA_DATABASE = process.env.CHROMA_DATABASE;
 const COLLECTION_PREFIX = process.env.CHROMA_COLLECTION_PREFIX || 'lw';
 const TOP_K = parseInt(process.env.CHROMA_TOP_K || '5', 10);
 const RETRIEVAL_TIMEOUT_MS = 2000;
@@ -21,6 +24,7 @@ const CIRCUIT_BREAKER_COOLDOWN_MS = 60_000;
 let client = null;
 let appearanceCollection = null;
 let storyCollection = null;
+let stageIdentityCollection = null;
 let enabled = false;
 
 let storyDocCounter = 0;
@@ -45,7 +49,16 @@ export async function initChroma() {
   }
 
   try {
-    client = new ChromaClient({ host: CHROMA_HOST, port: CHROMA_PORT, ssl: CHROMA_SSL });
+    if (CHROMA_API_KEY) {
+      client = new CloudClient({
+        apiKey: CHROMA_API_KEY,
+        ...(CHROMA_TENANT && { tenant: CHROMA_TENANT }),
+        ...(CHROMA_DATABASE && { database: CHROMA_DATABASE }),
+      });
+      console.log('[CHROMA] Using Chroma Cloud (CHROMADB_API_KEY)');
+    } else {
+      client = new ChromaClient({ host: CHROMA_HOST, port: CHROMA_PORT, ssl: CHROMA_SSL });
+    }
     await client.heartbeat();
 
     appearanceCollection = await client.getOrCreateCollection({
@@ -53,6 +66,9 @@ export async function initChroma() {
     });
     storyCollection = await client.getOrCreateCollection({
       name: `${COLLECTION_PREFIX}_story`,
+    });
+    stageIdentityCollection = await client.getOrCreateCollection({
+      name: `${COLLECTION_PREFIX}_stage_identity`,
     });
 
     enabled = true;
@@ -128,6 +144,75 @@ export async function getAppearanceMemories(campaignId, limit = TOP_K) {
     recordFailure('Appearance retrieval', err);
     return [];
   }
+}
+
+// ── Stage Identity (re-identification for V2V / judge re-entry) ─────────────
+
+/** Max distance to consider a query a "re-identification" of an existing stage character (same person returning). */
+const REID_DISTANCE_THRESHOLD = parseFloat(process.env.CHROMA_REID_DISTANCE_THRESHOLD || '0.5', 10) || 0.5;
+
+/**
+ * Store a stage identity (hero, judge, doll) so we can re-identify when they re-enter the frame.
+ * Used to keep V2V character skin consistent (e.g. Judge always appears as "Wizard").
+ * @param {number} campaignId
+ * @param {string} stageRole - e.g. 'hero', 'judge_1', 'doll'
+ * @param {string} descriptionDocument - Text description of the person/object (used for similarity search)
+ * @param {{ characterSkin?: string, narration?: string, scene_prompt?: string }} meta - Character skin and beat to reuse on re-id
+ */
+export async function upsertStageIdentity(campaignId, stageRole, descriptionDocument, meta = {}) {
+  if (!isAvailable() || !stageIdentityCollection) return;
+  try {
+    const docId = `stage_${campaignId}_${stageRole}`;
+    await stageIdentityCollection.upsert({
+      ids: [docId],
+      documents: [descriptionDocument || ''],
+      metadatas: [{
+        type: 'stage_identity',
+        campaignId,
+        stageRole,
+        characterSkin: String(meta.characterSkin || ''),
+        narration: String(meta.narration || ''),
+        scene_prompt: String(meta.scene_prompt || ''),
+        updatedAt: Date.now(),
+      }],
+    });
+    recordSuccess();
+  } catch (err) {
+    recordFailure('Stage identity upsert', err);
+  }
+}
+
+/**
+ * Query stage identities by description text to re-identify a returning person (e.g. judge left and came back).
+ * Returns matches sorted by distance (lowest first). If the best match has distance < REID_DISTANCE_THRESHOLD, treat as same character.
+ * @param {number} campaignId
+ * @param {string} descriptionText - Current frame's description of the new entrant
+ * @param {number} [limit]
+ * @returns {Promise<Array<{ id: string, document: string, metadata: object, distance: number }>>}
+ */
+export async function queryStageIdentityByDescription(campaignId, descriptionText, limit = 5) {
+  if (!isAvailable() || !stageIdentityCollection || !descriptionText?.trim()) return [];
+  try {
+    const results = await stageIdentityCollection.query({
+      queryTexts: [descriptionText.trim()],
+      nResults: limit,
+      where: { campaignId },
+    });
+    recordSuccess();
+    return zipQueryResults(results);
+  } catch (err) {
+    recordFailure('Stage identity query', err);
+    return [];
+  }
+}
+
+/**
+ * Whether the best match from queryStageIdentityByDescription is close enough to re-identify.
+ * @param {number} distance - Chroma query distance (lower = more similar)
+ * @returns {boolean}
+ */
+export function isReidentificationMatch(distance) {
+  return typeof distance === 'number' && distance <= REID_DISTANCE_THRESHOLD;
 }
 
 // ── Story Scene Memory ──────────────────────────
@@ -223,6 +308,9 @@ export async function clearCampaignMemory(campaignId) {
   try {
     await deleteByFilter(appearanceCollection, { campaignId });
     await deleteByFilter(storyCollection, { campaignId });
+    if (stageIdentityCollection) {
+      await deleteByFilter(stageIdentityCollection, { campaignId });
+    }
 
     for (const [key] of observationCounts) {
       if (key.startsWith(`appearance_${campaignId}_`)) {

@@ -643,6 +643,19 @@ The server accepts both string and Buffer WebSocket frames. After subscribing, w
 - **`audio_chunk`** — `{ "type": "audio_chunk", "payload": "<base64 PCM>", "sampleRate": 48000, "channels": 2 }`. Decode payload as 16-bit PCM, 48 kHz stereo; play via Web Audio API (queue chunks to avoid gaps).
 - **`music_session_ended`** — `{ "type": "music_session_ended" }` when the session has stopped.
 
+### WebSocket: LiveKit pipeline events
+
+The server broadcasts the following JSON messages to all connected clients when the real-time video pipeline is used (story session + LiveKit). Use them to drive UI (e.g. “Camera live”, “2 people on stage”) and to know when to subscribe to the egress track.
+
+| Type | Payload | When sent |
+|------|---------|-----------|
+| `livekit_room_ready` | `{ roomName, campaignId }` | After story session starts; client can join room and request token. |
+| `livekit_ingest_active` | `{ roomName, hasVideo: true }` | When the server learns a video track was published (client calls `POST /api/livekit/ingest-started` after publishing). |
+| `stage_vision_tick` | `{ people_count, new_entrant, setting? }` | Each time the vision worker runs on a frame (throttled). |
+| `character_injection` | `{ narration, scene_prompt, imageUrl?, new_entrant_description }` | New person detected (e.g. judge); same as from `POST /api/story/stage-vision`. |
+| `v2v_prompt_updated` | `{ prompt }` | V2V scene prompt changed (e.g. after character injection). |
+| `livekit_egress_active` | `{ roomName, trackName? }` | Server started publishing the transformed “story” video track. |
+
 ---
 
 ## WebSocket
@@ -740,4 +753,8 @@ Use this checklist to verify the full affective bedtime story flow locally (Segm
 | POST | `/api/music/update` | Update theme/mood for adaptive music (story session) |
 | POST | `/api/story/beat` | Bedtime story beat (Gemini + optional music update) |
 | GET | `/api/story/export` | Export bedtime beats as storybook pages |
+| POST | `/api/livekit/token` | LiveKit JWT for room join (publisher or viewer) |
+| GET | `/api/livekit/status` | Whether LiveKit is configured |
+| POST | `/api/livekit/ingest-started` | Notify server that client published video (triggers `livekit_ingest_active` broadcast) |
+| POST | `/api/livekit/vision-frame` | Send frame from stream; run stage vision, character injection, Lyria + V2V prompt update |
 | WS | `/` | Real-time `story_update` broadcasts; subscribe `story_audio` for PCM |

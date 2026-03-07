@@ -14,6 +14,7 @@ import audioRoutes from './routes/audio.js';
 import cameraRoutes from './routes/camera.js';
 import speechRoutes from './routes/speech.js';
 import storyRoutes from './routes/story.js';
+import livekitRoutes from './routes/livekit.js';
 import { initDb } from './db/index.js';
 import { initChroma, isChromaEnabled } from './memory/chroma.js';
 
@@ -107,6 +108,7 @@ app.use('/api', cameraRoutes);
 app.use('/api', speechRoutes);
 app.use('/api', gameRoutes);
 app.use('/api', storyRoutes);
+app.use('/api', livekitRoutes);
 
 // ── Root ──
 app.get('/', (req, res) => {
@@ -138,6 +140,10 @@ app.get('/', (req, res) => {
       storyStatus: 'GET /api/story/status',
       storyExport: 'GET /api/story/export',
       musicUpdate: 'POST /api/music/update',
+      livekitToken: 'POST /api/livekit/token',
+      livekitStatus: 'GET /api/livekit/status',
+      livekitIngestStarted: 'POST /api/livekit/ingest-started',
+      livekitVisionFrame: 'POST /api/livekit/vision-frame',
     },
     websocket: `ws://localhost:${PORT}`,
   });

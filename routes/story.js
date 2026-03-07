@@ -18,7 +18,7 @@ import { analyzeEmotionFromFrame } from '../vision/emotion_analysis.js';
 import { analyzeStageVision } from '../vision/stage_vision.js';
 import { generateSceneImage } from '../ai/nanobanana.js';
 import { detectToyInFrame } from '../vision/object_detection.js';
-import { retrieveMemoryContext, upsertStoryMemory } from '../memory/chroma.js';
+import { retrieveMemoryContext, upsertStoryMemory, queryStageIdentityByDescription, isReidentificationMatch, upsertStageIdentity } from '../memory/chroma.js';
 import {
   getCampaign,
   getEventCount,
@@ -34,6 +34,26 @@ const router = Router();
 
 /** In-memory active bedtime story session: { handle, campaignId, userTheme } or null */
 let activeStorySession = null;
+
+/** Return the current active story session (for LiveKit token and workers). */
+export function getActiveStorySession() {
+  return activeStorySession;
+}
+
+/**
+ * Apply a character-injection beat to Lyria (gentle welcoming prompt). Used by vision worker when judge enters.
+ * @param {object} session - Active story session with .handle
+ * @param {object} character_beat - { narration, scene_prompt }
+ */
+export async function applyCharacterInjectionToLyria(session, character_beat) {
+  if (!session?.handle || !character_beat) return;
+  const theme = session.userTheme || 'bedtime';
+  const scene = { theme, mood: 'calm', intensity: 0.4, emotion: 'peaceful' };
+  const result = generateMusicPrompts(scene);
+  const { weightedPrompts, theme: t, mood, intensity } = result;
+  await session.handle.updatePrompts(weightedPrompts);
+  markPromptsApplied({ theme: t, mood, intensity });
+}
 
 /**
  * POST /api/story/start
@@ -106,6 +126,13 @@ router.post('/story/start', async (req, res) => {
     activeStorySession = { handle, userTheme, campaignId, lastSeenPeopleCount: 0, lastSeenLabels: new Set(), language: req.body?.language || null };
     resetThrottle();
     req.app.locals._lyriaChunkCount = 0;
+
+    const broadcast = req.app.locals.broadcast;
+    const roomPrefix = process.env.LIVEKIT_ROOM_PREFIX || 'story';
+    const roomName = `${roomPrefix}-${campaignId}`;
+    if (broadcast) {
+      broadcast(JSON.stringify({ type: 'livekit_room_ready', roomName, campaignId }));
+    }
 
     res.json({ ok: true, message: 'Bedtime story session started', userTheme: userTheme ?? undefined });
   } catch (err) {
@@ -279,7 +306,22 @@ router.post('/story/stage-vision', async (req, res) => {
 
     if (result.new_entrant && result.new_entrant_description) {
       const context = activeStorySession.lastSetting || '';
-      character_beat = await generateCharacterInjectionBeat(result.new_entrant_description, context);
+      const matches = await queryStageIdentityByDescription(activeStorySession.campaignId, result.new_entrant_description, 3);
+      if (matches.length > 0 && isReidentificationMatch(matches[0].distance)) {
+        const m = matches[0];
+        character_beat = {
+          narration: m.metadata?.narration || 'A familiar traveler returned to the camp.',
+          scene_prompt: m.metadata?.scene_prompt || 'Gentle bedtime illustration of a friendly traveler, soft lighting, dreamy, watercolor style',
+        };
+      }
+      if (!character_beat) {
+        character_beat = await generateCharacterInjectionBeat(result.new_entrant_description, context);
+        await upsertStageIdentity(activeStorySession.campaignId, `judge_${result.people.length}`, result.new_entrant_description, {
+          characterSkin: 'traveler',
+          narration: character_beat.narration,
+          scene_prompt: character_beat.scene_prompt,
+        });
+      }
       if (generateImage && character_beat.scene_prompt) {
         try {
           const imgResult = await generateSceneImage(character_beat.scene_prompt);
