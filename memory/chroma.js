@@ -9,14 +9,28 @@
 
 import { ChromaClient } from 'chromadb';
 
-const CHROMA_URL = process.env.CHROMA_URL || 'http://localhost:8000';
+const CHROMA_HOST = process.env.CHROMA_HOST || 'localhost';
+const CHROMA_PORT = parseInt(process.env.CHROMA_PORT || '8000', 10);
+const CHROMA_SSL = process.env.CHROMA_SSL === 'true';
 const COLLECTION_PREFIX = process.env.CHROMA_COLLECTION_PREFIX || 'lw';
 const TOP_K = parseInt(process.env.CHROMA_TOP_K || '5', 10);
+const RETRIEVAL_TIMEOUT_MS = 2000;
+const CIRCUIT_BREAKER_THRESHOLD = 3;
+const CIRCUIT_BREAKER_COOLDOWN_MS = 60_000;
 
 let client = null;
 let appearanceCollection = null;
 let storyCollection = null;
 let enabled = false;
+
+let storyDocCounter = 0;
+
+/** In-memory cache of observation counts keyed by doc ID. */
+const observationCounts = new Map();
+
+/** Consecutive failure count for circuit breaker. */
+let consecutiveFailures = 0;
+let circuitOpenUntil = 0;
 
 // ── Public API ──────────────────────────────────
 
@@ -31,7 +45,7 @@ export async function initChroma() {
   }
 
   try {
-    client = new ChromaClient({ path: CHROMA_URL });
+    client = new ChromaClient({ host: CHROMA_HOST, port: CHROMA_PORT, ssl: CHROMA_SSL });
     await client.heartbeat();
 
     appearanceCollection = await client.getOrCreateCollection({
@@ -42,6 +56,7 @@ export async function initChroma() {
     });
 
     enabled = true;
+    consecutiveFailures = 0;
     console.log('[CHROMA] Connected — semantic memory enabled');
   } catch (err) {
     console.warn('[CHROMA] Unavailable — running without semantic memory:', err.message);
@@ -61,17 +76,17 @@ export function isChromaEnabled() {
 
 /**
  * Upsert a canonical appearance record for a detected person.
- * Merges observation count so repeated scans stabilize the record.
+ * Tracks observation count via in-memory cache to avoid a read-before-write round trip.
  * @param {number} campaignId
  * @param {{ label: string, fantasy_name?: string, character_description?: string, hair?: string, clothing?: string, features?: string, age_range?: string }} person
  * @param {string} [setting] - Environment description from the camera frame
  */
 export async function upsertAppearanceMemory(campaignId, person, setting) {
-  if (!enabled) return;
+  if (!isAvailable()) return;
   try {
     const docId = `appearance_${campaignId}_${person.label}`;
-    const existing = await safeGet(appearanceCollection, docId);
-    const observationCount = (existing?.metadatas?.[0]?.observationCount ?? 0) + 1;
+    const observationCount = (observationCounts.get(docId) ?? 0) + 1;
+    observationCounts.set(docId, observationCount);
 
     const documentText = buildAppearanceDocument(person, setting);
 
@@ -88,8 +103,9 @@ export async function upsertAppearanceMemory(campaignId, person, setting) {
         observationCount,
       }],
     });
+    recordSuccess();
   } catch (err) {
-    console.warn('[CHROMA] Appearance upsert failed:', err.message);
+    recordFailure('Appearance upsert', err);
   }
 }
 
@@ -100,15 +116,16 @@ export async function upsertAppearanceMemory(campaignId, person, setting) {
  * @returns {Promise<Array<{ id: string, document: string, metadata: object }>>}
  */
 export async function getAppearanceMemories(campaignId, limit = TOP_K) {
-  if (!enabled) return [];
+  if (!isAvailable()) return [];
   try {
     const results = await appearanceCollection.get({
       where: { campaignId },
       limit,
     });
+    recordSuccess();
     return zipResults(results);
   } catch (err) {
-    console.warn('[CHROMA] Appearance retrieval failed:', err.message);
+    recordFailure('Appearance retrieval', err);
     return [];
   }
 }
@@ -121,9 +138,9 @@ export async function getAppearanceMemories(campaignId, limit = TOP_K) {
  * @param {{ action: string, narration: string, scene_prompt: string, location: string, theme?: string, mood?: string, emotion?: string, learningMoment?: string, imageUrl?: string, timestamp: number }} event
  */
 export async function upsertStoryMemory(campaignId, event) {
-  if (!enabled) return;
+  if (!isAvailable()) return;
   try {
-    const docId = `story_${campaignId}_${event.timestamp}`;
+    const docId = `story_${campaignId}_${event.timestamp}_${storyDocCounter++}`;
     const documentText = buildStoryDocument(event);
 
     await storyCollection.upsert({
@@ -139,8 +156,9 @@ export async function upsertStoryMemory(campaignId, event) {
         mood: event.mood || '',
       }],
     });
+    recordSuccess();
   } catch (err) {
-    console.warn('[CHROMA] Story memory upsert failed:', err.message);
+    recordFailure('Story memory upsert', err);
   }
 }
 
@@ -153,16 +171,17 @@ export async function upsertStoryMemory(campaignId, event) {
  * @returns {Promise<Array<{ id: string, document: string, metadata: object, distance: number }>>}
  */
 export async function queryStoryMemories(campaignId, queryText, limit = TOP_K) {
-  if (!enabled) return [];
+  if (!isAvailable()) return [];
   try {
     const results = await storyCollection.query({
       queryTexts: [queryText],
       nResults: limit,
       where: { campaignId },
     });
+    recordSuccess();
     return zipQueryResults(results);
   } catch (err) {
-    console.warn('[CHROMA] Story query failed:', err.message);
+    recordFailure('Story query', err);
     return [];
   }
 }
@@ -172,13 +191,58 @@ export async function queryStoryMemories(campaignId, queryText, limit = TOP_K) {
 /**
  * Retrieve and summarize all relevant memories for a bedtime story beat.
  * Returns a compact prompt-ready text block, or empty string if nothing useful is found.
+ * Times out after RETRIEVAL_TIMEOUT_MS so Chroma latency never blocks the beat path.
  * @param {number} campaignId
  * @param {string} action - The player/listener action triggering the beat
  * @returns {Promise<string>}
  */
 export async function retrieveMemoryContext(campaignId, action) {
-  if (!enabled) return '';
+  if (!isAvailable()) return '';
 
+  try {
+    const result = await withTimeout(
+      retrieveMemoryContextInner(campaignId, action),
+      RETRIEVAL_TIMEOUT_MS,
+    );
+    return result;
+  } catch (err) {
+    recordFailure('Memory retrieval timeout', err);
+    return '';
+  }
+}
+
+// ── Campaign Reset ──────────────────────────────
+
+/**
+ * Delete all Chroma documents for a campaign.
+ * Call after SQLite campaign reset so stale memories don't leak into the next session.
+ * @param {number} campaignId
+ */
+export async function clearCampaignMemory(campaignId) {
+  if (!isAvailable()) return;
+  try {
+    await deleteByFilter(appearanceCollection, { campaignId });
+    await deleteByFilter(storyCollection, { campaignId });
+
+    for (const [key] of observationCounts) {
+      if (key.startsWith(`appearance_${campaignId}_`)) {
+        observationCounts.delete(key);
+      }
+    }
+  } catch (err) {
+    recordFailure('Campaign memory clear', err);
+  }
+}
+
+// ── Helpers ─────────────────────────────────────
+
+/**
+ * Core retrieval logic separated from the timeout wrapper.
+ * @param {number} campaignId
+ * @param {string} action
+ * @returns {Promise<string>}
+ */
+async function retrieveMemoryContextInner(campaignId, action) {
   const [appearances, scenes] = await Promise.all([
     getAppearanceMemories(campaignId, 3),
     queryStoryMemories(campaignId, action, 4),
@@ -189,7 +253,65 @@ export async function retrieveMemoryContext(campaignId, action) {
   return summarizeMemories(appearances, scenes);
 }
 
-// ── Helpers ─────────────────────────────────────
+/**
+ * Race a promise against a timeout. Rejects with a descriptive error on timeout.
+ * @param {Promise<T>} promise
+ * @param {number} ms
+ * @returns {Promise<T>}
+ * @template T
+ */
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms);
+    promise
+      .then((val) => { clearTimeout(timer); resolve(val); })
+      .catch((err) => { clearTimeout(timer); reject(err); });
+  });
+}
+
+/**
+ * Check whether Chroma is enabled and the circuit breaker is closed.
+ * @returns {boolean}
+ */
+function isAvailable() {
+  if (!enabled) return false;
+  if (Date.now() < circuitOpenUntil) return false;
+  return true;
+}
+
+/**
+ * Record a successful Chroma operation; resets the circuit breaker.
+ */
+function recordSuccess() {
+  consecutiveFailures = 0;
+}
+
+/**
+ * Record a failed Chroma operation and trip the circuit breaker if threshold is reached.
+ * @param {string} operation
+ * @param {Error} err
+ */
+function recordFailure(operation, err) {
+  consecutiveFailures++;
+  console.warn(`[CHROMA] ${operation} failed (${consecutiveFailures}/${CIRCUIT_BREAKER_THRESHOLD}):`, err.message);
+  if (consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+    circuitOpenUntil = Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS;
+    console.warn(`[CHROMA] Circuit breaker open — pausing for ${CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s`);
+  }
+}
+
+/**
+ * Delete documents from a collection matching a where filter.
+ * Chroma's delete API requires IDs, so we fetch matching IDs first.
+ * @param {object} collection
+ * @param {object} whereFilter
+ */
+async function deleteByFilter(collection, whereFilter) {
+  const batch = await collection.get({ where: whereFilter, limit: 1000 });
+  if (batch?.ids?.length > 0) {
+    await collection.delete({ ids: batch.ids });
+  }
+}
 
 /**
  * Build the document text for an appearance memory record.
@@ -283,22 +405,6 @@ function rankScenes(scenes) {
     const scoreB = distB + ageB * 0.01;
     return scoreA - scoreB;
   });
-}
-
-/**
- * Safely get a document by ID, returning null if it doesn't exist.
- * @param {object} collection
- * @param {string} id
- * @returns {Promise<object|null>}
- */
-async function safeGet(collection, id) {
-  try {
-    const result = await collection.get({ ids: [id] });
-    if (result?.ids?.length > 0) return result;
-    return null;
-  } catch {
-    return null;
-  }
 }
 
 /**

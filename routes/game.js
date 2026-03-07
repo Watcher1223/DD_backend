@@ -10,7 +10,7 @@ import { generateSceneImage } from '../ai/nanobanana.js';
 import { getMusicForMood, getAvailableMoods } from '../ai/lyria.js';
 import { detectDiceRoll } from '../vision/dice_detection.js';
 import { resolveCampaignId } from './resolve_campaign.js';
-import { isChromaEnabled } from '../memory/chroma.js';
+import { isChromaEnabled, clearCampaignMemory } from '../memory/chroma.js';
 import {
   getCampaign,
   appendEvent,
@@ -154,6 +154,7 @@ router.post('/campaign/reset', (req, res) => {
     return res.status(404).json({ error: 'Campaign not found' });
   }
   resetCampaign(campaignId);
+  clearCampaignMemory(campaignId).catch(() => {});
   res.json({ ok: true, message: 'Campaign reset' });
 });
 
