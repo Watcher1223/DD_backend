@@ -11,6 +11,17 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
+const LANGUAGE_NAMES = {
+  en: 'English',
+  es: 'Spanish',
+  fr: 'French',
+  de: 'German',
+  it: 'Italian',
+  pt: 'Portuguese',
+  ja: 'Japanese',
+  ko: 'Korean',
+};
+
 // System prompt that makes Gemini act as a D&D Dungeon Master
 const SYSTEM_PROMPT = `You are a legendary Dungeon Master narrating a dark fantasy campaign.
 
@@ -61,6 +72,62 @@ ${THEME_KEYS.map((t) => `- ${t}`).join('\n')}
 
 Respond with ONLY valid JSON: { "theme": "<exactly one of the list above>" }
 If unclear or generic (e.g. "a story"), use "bedtime".`;
+
+/** Prompt for injecting a new character (e.g. judge) into the story when they appear on stage. */
+const CHARACTER_INJECTION_PROMPT = `You are a gentle storyteller. A NEW PERSON has just appeared in the room during a live bedtime story. Describe their arrival in 1-2 short, calming sentences that weave them into the story as a friendly character (e.g. a wise traveler, a gentle guardian, a mysterious friend). Keep it child-friendly and warm.
+
+Respond with ONLY valid JSON in this exact format (no markdown, no code fences):
+{
+  "narration": "One or two sentences describing the new character's arrival in the story.",
+  "scene_prompt": "A detailed visual description for an image generator: gentle bedtime illustration of [this character and the scene], soft lighting, dreamy, child-friendly, watercolor style"
+}`;
+
+/**
+ * Generate a short story beat that introduces a new character (e.g. judge walking on stage).
+ * @param {string} entrantDescription - Brief description of the new person (e.g. "adult with glasses, friendly expression")
+ * @param {string} [currentStoryContext] - Optional current location or story context
+ * @returns {Promise<{ narration: string, scene_prompt: string }>}
+ */
+export async function generateCharacterInjectionBeat(entrantDescription, currentStoryContext = '') {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
+    throw new Error('Gemini API key required. Set GEMINI_API_KEY in .env');
+  }
+
+  const userText = `The new person visible in the room: ${entrantDescription}.${currentStoryContext ? ` Current story setting: ${currentStoryContext}.` : ''}`;
+
+  const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: CHARACTER_INJECTION_PROMPT + '\n\n' + userText }] }],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 512,
+        responseMimeType: 'application/json',
+      },
+    }),
+  });
+
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    const errMsg = data.error?.message || res.statusText || 'Unknown error';
+    throw new Error(`Character injection failed: ${errMsg}`);
+  }
+
+  const parsed = parseGeminiJson(text);
+  if (!parsed || !parsed.narration) {
+    return {
+      narration: `A wise traveler appeared at the edge of the camp, smiling gently.`,
+      scene_prompt: 'Gentle bedtime illustration of a friendly traveler in soft lighting, dreamy, child-friendly, watercolor style',
+    };
+  }
+
+  return {
+    narration: String(parsed.narration).trim(),
+    scene_prompt: parsed.scene_prompt ? String(parsed.scene_prompt).trim() : 'Gentle bedtime illustration, soft lighting, dreamy, child-friendly, watercolor style',
+  };
+}
 
 /**
  * Extract theme key from user's voice or text description (e.g. "bedtime story with a theme in the forest" → "magical forest").
@@ -120,18 +187,29 @@ function normalizeThemeFallback(text) {
  * Generate a bedtime story beat (narration + theme signals for adaptive music).
  * @param {string} playerAction - What the listener said or what happens next
  * @param {object} campaign - Full campaign history object (same shape as DM)
+ * @param {{ protagonist_description?: string }} [options] - Optional protagonist (e.g. doll) so the hero of the story matches
  * @returns {object} { narration, scene_prompt, theme, genre, mood, intensity, emotion, characters_mentioned, location }
  */
-export async function generateBedtimeStoryBeat(playerAction, campaign) {
+export async function generateBedtimeStoryBeat(playerAction, campaign, options = {}) {
   const historyContext = buildHistoryContext(campaign);
+  const protagonist_description = options?.protagonist_description;
+  const language = options?.language;
 
-  const userPrompt = [
+  let userPrompt = [
     historyContext,
     '',
     `NEXT: "${playerAction}"`,
     '',
     'Generate the next story beat as JSON.',
   ].join('\n');
+
+  if (language && LANGUAGE_NAMES[language]) {
+    userPrompt = `Narrate in ${LANGUAGE_NAMES[language]}. All narration text must be in that language.\n\n` + userPrompt;
+  }
+
+  if (protagonist_description && String(protagonist_description).trim()) {
+    userPrompt = `The hero of the story is: ${String(protagonist_description).trim()}. Describe scenes with this character as the main focus. Keep the same JSON format.\n\n` + userPrompt;
+  }
 
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
     throw new Error('Gemini API key required. Set GEMINI_API_KEY in .env');

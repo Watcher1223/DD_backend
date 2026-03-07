@@ -5,7 +5,7 @@
 // ═══════════════════════════════════════════════
 
 import { parseGeminiJson } from '../ai/parse_json.js';
-import { parseFrame } from './frame_utils.js';
+import { parseFrame } from '../utils/media.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
@@ -13,25 +13,32 @@ const GEMINI_VISION_URL = `https://generativelanguage.googleapis.com/v1beta/mode
 
 const EMOTION_PROMPT = `Look at the person or people in this image. Infer the PRIMARY emotional state from their face, posture, and context (e.g. bedtime, relaxing).
 
+Also detect these distinct STAGE EVENTS if clearly visible (pick at most one, or none):
+- yawn: mouth open, eyes relaxed or closed, sleepy/drowsy expression
+- laugh: big smile, eyes crinkled or squinting, joyful expression
+- scared: wide eyes, tense expression, fear or surprise
+
 Focus on one main viewer if multiple people. Return ONLY valid JSON in this exact format (no markdown, no code fences):
 {
   "emotion": "one of: sleepy, happy, excited, sad, neutral, calm, scared, curious, peaceful",
   "mood": "one of: calm, peaceful, sleepy, gentle, dreamy, tense, sad, happy",
-  "intensity": 0.0 to 1.0
+  "intensity": 0.0 to 1.0,
+  "detected_events": ["yawn"] or ["laugh"] or ["scared"] or []
 }
 
-Keep intensity low (0.2-0.4) for sleepy/calm/peaceful, medium (0.4-0.6) for happy/curious, higher (0.6-0.8) for excited. Use child-friendly, gentle interpretations. Theme/setting is provided by the user separately — do not infer theme from the image.`;
+Use detected_events only when the corresponding expression is clear. If unsure, use []. Keep intensity low (0.2-0.4) for sleepy/calm/peaceful, medium (0.4-0.6) for happy/curious, higher (0.6-0.8) for excited. Theme/setting is provided by the user separately — do not infer theme from the image.`;
 
 const DEFAULTS = {
   emotion: 'neutral',
   mood: 'calm',
   intensity: 0.3,
+  detected_events: [],
 };
 
 /**
- * Analyze a webcam frame and return emotion/mood/intensity for music (theme comes from user description, not image).
+ * Analyze a webcam frame and return emotion/mood/intensity and optional stage events (yawn/laugh/scared) for music.
  * @param {string} frameBase64 - Base64 or data URL from webcam
- * @returns {Promise<{ emotion: string, mood: string, intensity: number }>}
+ * @returns {Promise<{ emotion: string, mood: string, intensity: number, detected_events?: string[] }>}
  */
 export async function analyzeEmotionFromFrame(frameBase64) {
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {
@@ -78,16 +85,18 @@ export async function analyzeEmotionFromFrame(frameBase64) {
   }
 
   const parsed = parseGeminiJson(text, DEFAULTS);
-  if (!parsed) return DEFAULTS;
+  if (!parsed) return { ...DEFAULTS, detected_events: [] };
 
   const emotion = normalizeEmotion(parsed.emotion);
   const mood = normalizeMood(parsed.mood);
   const intensity = clamp(Number(parsed.intensity), 0, 1);
+  const detected_events = normalizeDetectedEvents(parsed.detected_events);
 
   return {
     emotion: emotion || DEFAULTS.emotion,
     mood: mood || DEFAULTS.mood,
     intensity: Number.isNaN(intensity) ? DEFAULTS.intensity : intensity,
+    detected_events,
   };
 }
 
@@ -115,6 +124,18 @@ function normalizeMood(s) {
   if (/sad|melancholy/.test(v)) return 'sad';
   if (/tense|dramatic/.test(v)) return 'tense';
   return 'calm';
+}
+
+const VALID_STAGE_EVENTS = new Set(['yawn', 'laugh', 'scared']);
+
+function normalizeDetectedEvents(val) {
+  if (!Array.isArray(val)) return [];
+  const out = [];
+  for (const e of val) {
+    const v = (e && String(e).toLowerCase().trim()) || '';
+    if (VALID_STAGE_EVENTS.has(v)) out.push(v);
+  }
+  return out.slice(0, 1); // at most one event per frame
 }
 
 function clamp(n, min, max) {

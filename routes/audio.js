@@ -74,6 +74,7 @@ router.get('/music/generate', async (req, res) => {
  */
 router.get('/tts', async (req, res) => {
   const text = req.query.text;
+  const lang = (req.query.lang && String(req.query.lang).trim()) || 'en';
   if (!text || typeof text !== 'string') {
     return res.status(400).json({ error: 'Missing or invalid text query parameter' });
   }
@@ -86,7 +87,7 @@ router.get('/tts', async (req, res) => {
     const ttsUrl = new URL('https://translate.google.com/translate_tts');
     ttsUrl.searchParams.set('ie', 'UTF-8');
     ttsUrl.searchParams.set('q', clean);
-    ttsUrl.searchParams.set('tl', 'en');
+    ttsUrl.searchParams.set('tl', lang);
     ttsUrl.searchParams.set('client', 'tw-ob');
 
     const response = await fetch(ttsUrl.toString(), {

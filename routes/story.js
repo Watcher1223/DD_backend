@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import { createLyriaRealtimeSession } from '../ai/lyria_realtime.js';
-import { generateBedtimeStoryBeat, extractThemeFromDescription } from '../ai/gemini.js';
+import { generateBedtimeStoryBeat, extractThemeFromDescription, generateCharacterInjectionBeat } from '../ai/gemini.js';
 import {
   generateMusicPrompts,
   shouldUpdatePrompts,
@@ -14,6 +14,9 @@ import {
   DEFAULT_WEIGHTED_PROMPTS,
 } from '../ai/music_engine.js';
 import { analyzeEmotionFromFrame } from '../vision/emotion_analysis.js';
+import { analyzeStageVision } from '../vision/stage_vision.js';
+import { generateSceneImage } from '../ai/nanobanana.js';
+import { detectToyInFrame } from '../vision/object_detection.js';
 import {
   getCampaign,
   getOrCreateDefaultCampaign,
@@ -91,7 +94,7 @@ router.post('/story/start', async (req, res) => {
       markPromptsApplied({ theme, mood, intensity });
     }
 
-    activeStorySession = { handle, userTheme };
+    activeStorySession = { handle, userTheme, lastSeenPeopleCount: 0, lastSeenLabels: new Set(), language: req.body?.language || null };
     resetThrottle();
     req.app.locals._lyriaChunkCount = 0;
 
@@ -167,10 +170,15 @@ router.post('/story/emotion-from-camera', async (req, res) => {
         mood: signals.mood,
         intensity: signals.intensity,
         emotion: signals.emotion,
+        detected_events: signals.detected_events || [],
       };
-      const { weightedPrompts, theme: t, mood, intensity } = generateMusicPrompts(scene);
+      const result = generateMusicPrompts(scene);
+      const { weightedPrompts, theme: t, mood, intensity, stageEventConfig } = result;
       if (shouldUpdatePrompts({ theme: t, mood, intensity })) {
         await activeStorySession.handle.updatePrompts(weightedPrompts);
+        if (stageEventConfig) {
+          activeStorySession.handle.setMusicGenerationConfig(stageEventConfig);
+        }
         markPromptsApplied({ theme: t, mood, intensity });
         musicUpdated = true;
       }
@@ -181,6 +189,7 @@ router.post('/story/emotion-from-camera', async (req, res) => {
       mood: signals.mood,
       theme,
       intensity: signals.intensity,
+      detected_events: signals.detected_events || [],
       musicUpdated,
     });
   } catch (err) {
@@ -221,6 +230,126 @@ router.post('/story/set-theme', async (req, res) => {
 });
 
 /**
+ * POST /api/story/stage-vision
+ * Send a webcam frame; detect if a new person entered (e.g. judge). If so, generate a character-injection beat and optionally a character card image.
+ * Body: { frame: string (base64), generateImage?: boolean }
+ */
+router.post('/story/stage-vision', async (req, res) => {
+  const { frame, generateImage } = req.body || {};
+  if (!frame || typeof frame !== 'string') {
+    return res.status(400).json({ error: 'frame is required (base64 encoded image)' });
+  }
+  if (!activeStorySession) {
+    return res.status(409).json({ error: 'No active story session', message: 'Call POST /api/story/start first.' });
+  }
+
+  try {
+    const prevCount = activeStorySession.lastSeenPeopleCount ?? 0;
+    const prevLabels = activeStorySession.lastSeenLabels ?? new Set();
+    const result = await analyzeStageVision(frame, prevCount, prevLabels);
+
+    activeStorySession.lastSeenPeopleCount = result.people.length;
+    activeStorySession.lastSeenLabels = new Set(result.people.map((p) => p.label).filter(Boolean));
+    if (result.setting) activeStorySession.lastSetting = result.setting;
+
+    let character_beat = null;
+    let imageUrl = null;
+
+    if (result.new_entrant && result.new_entrant_description) {
+      const context = activeStorySession.lastSetting || '';
+      character_beat = await generateCharacterInjectionBeat(result.new_entrant_description, context);
+      if (generateImage && character_beat.scene_prompt) {
+        try {
+          const imgResult = await generateSceneImage(character_beat.scene_prompt);
+          if (imgResult?.imageUrl) imageUrl = imgResult.imageUrl;
+        } catch (imgErr) {
+          console.warn('[STORY] Character card image failed:', imgErr.message);
+        }
+      }
+      const broadcast = req.app.locals.broadcast;
+      if (broadcast && character_beat) {
+        broadcast(JSON.stringify({
+          type: 'character_injection',
+          narration: character_beat.narration,
+          scene_prompt: character_beat.scene_prompt,
+          imageUrl: imageUrl || undefined,
+        }));
+      }
+    }
+
+    res.json({
+      new_entrant: result.new_entrant,
+      people_count: result.people.length,
+      character_beat: character_beat || undefined,
+      imageUrl: imageUrl || undefined,
+    });
+  } catch (err) {
+    console.error('[STORY] Stage-vision failed:', err.message);
+    const status = err.message?.includes('required') || err.message?.includes('Gemini') ? 503 : 500;
+    res.status(status).json({ error: 'Stage vision failed', details: err.message });
+  }
+});
+
+/**
+ * POST /api/story/detect-object
+ * Detect toy/doll in frame for use as protagonist. Body: { frame: string (base64) }
+ */
+router.post('/story/detect-object', async (req, res) => {
+  const { frame } = req.body || {};
+  if (!frame || typeof frame !== 'string') {
+    return res.status(400).json({ error: 'frame is required (base64 encoded image)' });
+  }
+
+  try {
+    const result = await detectToyInFrame(frame);
+    res.json({
+      objects: result.objects,
+      protagonist_description: result.protagonist_description ?? undefined,
+    });
+  } catch (err) {
+    console.error('[STORY] Detect-object failed:', err.message);
+    const status = err.message?.includes('required') || err.message?.includes('Gemini') ? 503 : 500;
+    res.status(status).json({ error: 'Object detection failed', details: err.message });
+  }
+});
+
+/**
+ * POST /api/story/set-protagonist
+ * Set the story protagonist from a description (e.g. from detect-object). Body: { protagonist_description: string }
+ */
+router.post('/story/set-protagonist', (req, res) => {
+  const protagonist_description = req.body?.protagonist_description;
+  if (protagonist_description !== undefined && typeof protagonist_description !== 'string') {
+    return res.status(400).json({ error: 'protagonist_description must be a string or omit to clear' });
+  }
+  if (activeStorySession) {
+    activeStorySession.protagonist_description = protagonist_description && protagonist_description.trim() ? protagonist_description.trim() : null;
+  }
+  res.json({
+    ok: true,
+    protagonist_description: activeStorySession?.protagonist_description ?? null,
+  });
+});
+
+/**
+ * POST /api/story/set-language
+ * Set narration language for the active story session. Body: { language: string } (e.g. 'es', 'fr', 'en')
+ */
+router.post('/story/set-language', (req, res) => {
+  const language = req.body?.language;
+  if (language !== undefined && (typeof language !== 'string' || !language.trim())) {
+    return res.status(400).json({ error: 'language must be a non-empty string (e.g. es, fr, en)' });
+  }
+  if (activeStorySession) {
+    activeStorySession.language = language && language.trim() ? language.trim().toLowerCase() : null;
+  }
+  res.json({
+    ok: true,
+    language: activeStorySession?.language ?? null,
+  });
+});
+
+/**
  * POST /api/story/stop
  * End the bedtime story session and close Lyria RealTime.
  */
@@ -250,6 +379,7 @@ router.get('/story/status', (req, res) => {
   res.json({
     active: !!activeStorySession,
     userTheme: activeStorySession?.userTheme ?? null,
+    language: activeStorySession?.language ?? null,
   });
 });
 
@@ -289,7 +419,9 @@ router.post('/story/beat', async (req, res) => {
 
   try {
     const campaign = getCampaign(campaignId);
-    const beat = await generateBedtimeStoryBeat(action, campaign);
+    const protagonist_description = activeStorySession?.protagonist_description;
+    const language = activeStorySession?.language || req.body?.language || 'en';
+    const beat = await generateBedtimeStoryBeat(action, campaign, { protagonist_description, language });
 
     const event = {
       action,
@@ -319,6 +451,10 @@ router.post('/story/beat', async (req, res) => {
     }
 
     const eventNumber = getEventCount(campaignId);
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const langParam = language && language !== 'en' ? `&lang=${encodeURIComponent(language)}` : '';
+    const narrationAudioUrl = `${baseUrl}/api/tts?text=${encodeURIComponent(beat.narration)}${langParam}`;
+
     res.json({
       narration: beat.narration,
       scene_prompt: beat.scene_prompt,
@@ -328,6 +464,8 @@ router.post('/story/beat', async (req, res) => {
       emotion: beat.emotion,
       location: beat.location,
       event_number: eventNumber,
+      language,
+      narrationAudioUrl,
     });
   } catch (err) {
     console.error('[STORY] Beat failed:', err.message);
