@@ -391,6 +391,46 @@ Returns Lyria 2 WAV stream when Lyria is configured. Used for `music.audioUrl` w
 
 ---
 
+## Bedtime story mode
+
+Bedtime story uses **Lyria RealTime** (Gemini API `lyria-realtime-exp`) for **continuous** adaptive music. Music never stops; it only changes when theme/mood/intensity signals are sent via `POST /api/music/update`. Start a session with `POST /api/story/start`, then receive raw PCM audio over the WebSocket by subscribing to the `story_audio` channel.
+
+### `POST /api/story/start`
+
+Starts a Lyria RealTime session: opens WebSocket to the music model, sets initial lullaby-style prompts, and begins streaming. Audio is sent to all WebSocket clients that have subscribed to `story_audio`.
+
+**Response (200):** `{ "ok": true, "message": "Bedtime story session started" }`
+
+**Errors:** `503` — Lyria RealTime failed (e.g. missing `GEMINI_API_KEY` or quota).
+
+### `POST /api/music/update`
+
+Updates the music prompts for the active story session (theme/mood/intensity). Call this when the narrative context changes (e.g. every story beat or every 1–2 seconds from a separate pipeline). Updates are throttled: only applied when theme/mood change or intensity delta > 0.15.
+
+**Request body (all optional):** `theme`, `genre`, `mood`, `intensity`, `emotion`.
+
+**Response (200):** `{ "ok": true, "updated": true }` or `{ "ok": true, "skipped": true, "reason": "throttled" }`
+
+**Errors:** `409` — No active story session (call `POST /api/story/start` first).
+
+### `POST /api/story/stop`
+
+Ends the bedtime story session and closes the Lyria RealTime WebSocket. **Response (200):** `{ "ok": true, "message": "Story session stopped" }`
+
+### `GET /api/story/status`
+
+**Response (200):** `{ "active": true }` or `{ "active": false }`
+
+### `POST /api/story/beat`
+
+Bedtime story beat: Gemini generates narration + theme/mood/emotion; state is persisted; if a story session is active, music prompts are updated. **Body:** `{ "action": "string" }` (required), optional `campaignId`. **Response:** `narration`, `scene_prompt`, `theme`, `mood`, `intensity`, `emotion`, `location`, `event_number`.
+
+### WebSocket: story audio
+
+Subscribe by sending `{ "type": "subscribe", "channel": "story_audio" }`. Server sends `{ "type": "audio_chunk", "payload": "<base64 PCM>", "sampleRate": 48000, "channels": 2 }` and optionally `{ "type": "music_session_ended" }`. Decode payload as 16-bit PCM, 48 kHz stereo; play via Web Audio API.
+
+---
+
 ## WebSocket
 
 Connect to `ws://localhost:4300` (or `wss://` in production).
@@ -451,4 +491,9 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 | GET | `/api/audio?url=...` | Music proxy (used by backend) |
 | GET | `/api/tts?text=...` | Narration speech (used by backend) |
 | GET | `/api/music/generate?mood=...` | Lyria 2 music stream (used by backend) |
-| WS | `/` | Real-time `story_update` broadcasts |
+| POST | `/api/story/start` | Start bedtime story Lyria RealTime session |
+| POST | `/api/story/stop` | Stop story session |
+| GET | `/api/story/status` | Whether story session is active |
+| POST | `/api/music/update` | Update theme/mood for adaptive music (story session) |
+| POST | `/api/story/beat` | Bedtime story beat (Gemini + optional music update) |
+| WS | `/` | Real-time `story_update` broadcasts; subscribe `story_audio` for PCM |

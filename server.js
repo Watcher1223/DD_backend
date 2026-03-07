@@ -12,6 +12,7 @@ import http from 'http';
 import gameRoutes from './routes/game.js';
 import audioRoutes from './routes/audio.js';
 import cameraRoutes from './routes/camera.js';
+import storyRoutes from './routes/story.js';
 import { initDb } from './db/index.js';
 
 const PORT = parseInt(process.env.PORT || '4300', 10);
@@ -31,13 +32,25 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 const wsClients = new Set();
+/** Subscribers to bedtime story audio (Lyria RealTime PCM stream) */
+const storyAudioSubscribers = new Set();
 
 wss.on('connection', (ws) => {
   wsClients.add(ws);
   console.log(`[WS] Client connected (${wsClients.size} total)`);
 
+  ws.on('message', (data) => {
+    try {
+      const msg = typeof data === 'string' ? JSON.parse(data) : null;
+      if (msg?.type === 'subscribe' && msg?.channel === 'story_audio') {
+        storyAudioSubscribers.add(ws);
+      }
+    } catch (_) {}
+  });
+
   ws.on('close', () => {
     wsClients.delete(ws);
+    storyAudioSubscribers.delete(ws);
     console.log(`[WS] Client disconnected (${wsClients.size} total)`);
   });
 });
@@ -51,10 +64,33 @@ app.locals.broadcast = (message) => {
   }
 };
 
+// Send Lyria RealTime PCM to story-audio subscribers (base64 JSON for compatibility)
+app.locals.broadcastStoryAudio = (pcmBuffer) => {
+  const payload = pcmBuffer.toString('base64');
+  for (const ws of storyAudioSubscribers) {
+    try {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'audio_chunk', payload, sampleRate: 48000, channels: 2 }));
+      }
+    } catch (_) {}
+  }
+};
+
+app.locals.broadcastStoryAudioEnd = () => {
+  for (const ws of storyAudioSubscribers) {
+    try {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'music_session_ended' }));
+      }
+    } catch (_) {}
+  }
+};
+
 // ── Routes ──
 app.use('/api', audioRoutes);
 app.use('/api', cameraRoutes);
 app.use('/api', gameRoutes);
+app.use('/api', storyRoutes);
 
 // ── Root ──
 app.get('/', (req, res) => {
@@ -75,6 +111,10 @@ app.get('/', (req, res) => {
       audio: 'GET /api/audio?url=... (music proxy)',
       tts: 'GET /api/tts?text=... (narration speech)',
       musicGenerate: 'GET /api/music/generate?mood=... (Lyria 2)',
+      storyStart: 'POST /api/story/start',
+      storyStop: 'POST /api/story/stop',
+      storyStatus: 'GET /api/story/status',
+      musicUpdate: 'POST /api/music/update',
     },
     websocket: `ws://localhost:${PORT}`,
   });
@@ -92,5 +132,6 @@ server.listen(PORT, () => {
   console.log(`  Vision:    ${process.env.GEMINI_API_KEY ? 'configured (camera analysis)' : 'requires GEMINI_API_KEY'}`);
   console.log(`  NanoBanana:${process.env.NANOBANANA_API_KEY ? 'NanoBanana 2' : process.env.GOOGLE_CLOUD_PROJECT ? 'Imagen (Vertex)' : 'required (NANOBANANA_API_KEY or GOOGLE_CLOUD_PROJECT)'}`);
   console.log(`  Lyria:     ${process.env.GOOGLE_CLOUD_PROJECT ? 'Vertex Lyria 2' : 'required (GOOGLE_CLOUD_PROJECT)'}`);
+  console.log(`  Lyria RT:  ${process.env.GEMINI_API_KEY ? 'Gemini API (bedtime story)' : 'use GEMINI_API_KEY for story mode'}`);
   console.log('');
 });
