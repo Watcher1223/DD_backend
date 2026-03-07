@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bedtime Story — Mood & Emotion Audio Test</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; margin-bottom: 0.25rem; }
+    .sub { font-size: 0.875rem; color: #666; margin-bottom: 1rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+    button {
+      font-size: 0.9rem; padding: 0.5rem 0.75rem; border: none; border-radius: 6px; cursor: pointer;
+      background: #1a1a2e; color: #eee;
+    }
+    button:hover:not(:disabled) { background: #16213e; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.danger { background: #6b2d3c; }
+    button.danger:hover:not(:disabled) { background: #8b3d4c; }
+    button.mood { background: #2d4a6b; }
+    button.mood:hover:not(:disabled) { background: #3d5a7b; }
+    .status { font-size: 0.8rem; color: #666; margin-top: 0.5rem; padding: 0.5rem; background: #f5f5f5; border-radius: 4px; }
+    .status.playing { background: #e8f5e9; color: #2e7d32; }
+    .status.error { background: #ffebee; color: #c62828; }
+    .current { font-size: 0.85rem; margin-top: 0.5rem; font-weight: 600; }
+    section { margin-bottom: 1.5rem; }
+    section h2 { font-size: 1rem; margin-bottom: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Bedtime Story — Mood & Emotion Test</h1>
+  <p class="sub">Start a Lyria RealTime session and change the music with different themes, moods, and emotions.</p>
+
+  <section>
+    <h2>Session</h2>
+    <div class="row">
+      <button id="btnTestMusic">Play test music (batch Lyria)</button>
+      <button id="btnStart">Start story session</button>
+      <button id="btnStop" class="danger" disabled>Stop session</button>
+    </div>
+    <p class="sub" style="margin-top:0.25rem;">Use “Play test music” first to confirm your speakers work (plays a short calm WAV from the server).</p>
+  </section>
+
+  <section>
+    <h2>Change music (theme + mood + emotion)</h2>
+    <p class="sub">Click a preset to send POST /api/music/update. Music should transition within ~2 seconds.</p>
+    <div class="row" id="presets"></div>
+    <div id="current" class="current"></div>
+  </section>
+
+  <div id="status" class="status">Start the session and subscribe to hear audio. Use a browser that supports Web Audio.</div>
+  <div style="margin-top:0.5rem;">
+    <label><input type="checkbox" id="planarPCM" /> Try planar PCM (if you hear no sound with default)</label>
+  </div>
+  <div id="serverChunks" class="status" style="margin-top:0.25rem; font-size:0.75rem;"></div>
+
+  <script>
+    const API = window.location.origin;
+    const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host;
+
+    const presets = [
+      { label: 'Calm / Sleepy', theme: 'bedtime', mood: 'calm', intensity: 0.2, emotion: 'sleepy' },
+      { label: 'Magical forest / Happy', theme: 'magical forest', mood: 'gentle', intensity: 0.4, emotion: 'happy' },
+      { label: 'Dragon adventure / Excited', theme: 'dragon adventure', mood: 'tense', intensity: 0.7, emotion: 'excited' },
+      { label: 'Under the sea / Peaceful', theme: 'under the sea', mood: 'peaceful', intensity: 0.25, emotion: 'peaceful' },
+      { label: 'Fairy tale / Curious', theme: 'fairy tale', mood: 'dreamy', intensity: 0.5, emotion: 'curious' },
+      { label: 'Space / Neutral', theme: 'space adventure', mood: 'calm', intensity: 0.4, emotion: 'neutral' },
+      { label: 'Sad / Low energy', theme: 'calm', mood: 'sad', intensity: 0.2, emotion: 'sad' },
+      { label: 'Back to lullaby', theme: 'bedtime', mood: 'calm', intensity: 0.2, emotion: 'sleepy' },
+    ];
+
+    const btnStart = document.getElementById('btnStart');
+    const btnStop = document.getElementById('btnStop');
+    const btnTestMusic = document.getElementById('btnTestMusic');
+    const statusEl = document.getElementById('status');
+    const currentEl = document.getElementById('current');
+    const presetsEl = document.getElementById('presets');
+    const serverChunksEl = document.getElementById('serverChunks');
+    const planarCheckbox = document.getElementById('planarPCM');
+
+    let ws = null;
+    let audioContext = null;
+    let gainNode = null;
+    let sessionActive = false;
+    let chunksReceived = 0;
+    let nextStartTime = 0;
+
+    function setStatus(msg, type = '') {
+      statusEl.textContent = msg;
+      statusEl.className = 'status' + (type ? ' ' + type : '');
+    }
+
+    function setStatusWithChunks(msg, type = '') {
+      const chunkInfo = chunksReceived > 0 ? ' (' + chunksReceived + ' chunks)' : '';
+      statusEl.textContent = msg + chunkInfo;
+      statusEl.className = 'status' + (type ? ' ' + type : '');
+    }
+
+    function setCurrent(label) {
+      currentEl.textContent = label ? 'Current: ' + label : '';
+    }
+
+    function pcmToWavBlob(int16Array, sampleRate = 48000, channels = 2) {
+      const numFrames = int16Array.length / channels;
+      const dataLength = numFrames * channels * 2;
+      const buffer = new ArrayBuffer(44 + dataLength);
+      const view = new DataView(buffer);
+      const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+      writeStr(0, 'RIFF');
+      view.setUint32(4, 36 + dataLength, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, channels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * channels * 2, true);
+      view.setUint16(32, channels * 2, true);
+      view.setUint16(34, 16, true);
+      writeStr(36, 'data');
+      view.setUint32(40, dataLength, true);
+      const pcm = new Int16Array(buffer, 44, int16Array.length);
+      pcm.set(int16Array);
+      return new Blob([buffer], { type: 'audio/wav' });
+    }
+
+    function decodeBase64ToArrayBuffer(b64) {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes.buffer;
+    }
+
+    function playPCMChunk(int16Array, sampleRate = 48000, channels = 2) {
+      if (!audioContext) return;
+      if (audioContext.state === 'suspended') {
+        audioContext.resume().then(() => playPCMChunk(int16Array, sampleRate, channels));
+        return;
+      }
+      const len = int16Array.length;
+      const numFrames = len / channels;
+      if (numFrames < 100) return;
+      const left = new Float32Array(numFrames);
+      const right = new Float32Array(numFrames);
+      const planar = planarCheckbox && planarCheckbox.checked;
+      if (planar) {
+        for (let i = 0; i < numFrames; i++) {
+          left[i] = int16Array[i] / 32768;
+          right[i] = int16Array[numFrames + i] / 32768;
+        }
+      } else {
+        for (let i = 0; i < numFrames; i++) {
+          left[i] = int16Array[i * 2] / 32768;
+          right[i] = int16Array[i * 2 + 1] / 32768;
+        }
+      }
+      const buffer = audioContext.createBuffer(channels, numFrames, sampleRate);
+      buffer.copyToChannel(left, 0);
+      buffer.copyToChannel(right, 1);
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(gainNode || audioContext.destination);
+      const now = audioContext.currentTime;
+      const start = Math.max(now, nextStartTime);
+      source.start(start);
+      nextStartTime = start + buffer.duration;
+    }
+
+    function processAudioChunk(payloadBase64, sampleRate = 48000, channels = 2) {
+      try {
+        const ab = decodeBase64ToArrayBuffer(payloadBase64);
+        const int16 = new Int16Array(ab);
+        chunksReceived++;
+        if (chunksReceived === 1) {
+          const wavBlob = pcmToWavBlob(int16, sampleRate, channels);
+          const url = URL.createObjectURL(wavBlob);
+          const audio = new Audio(url);
+          audio.play().then(() => setStatus('First chunk played as WAV. Streaming via Web Audio…', 'playing')).catch((e) => console.warn('WAV play failed', e));
+          audio.onended = () => URL.revokeObjectURL(url);
+        }
+        if (chunksReceived <= 5 || chunksReceived % 10 === 0) {
+          setStatusWithChunks('Playing Lyria audio…', 'playing');
+        }
+        playPCMChunk(int16, sampleRate, channels);
+      } catch (e) {
+        console.warn('Audio decode error:', e);
+      }
+    }
+
+    function connectWS() {
+      if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ type: 'subscribe', channel: 'story_audio' }));
+          setStatus('WebSocket connected, subscribed to story_audio. Starting Lyria…', 'playing');
+          resolve();
+        };
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'audio_chunk' && msg.payload) {
+              processAudioChunk(msg.payload, msg.sampleRate || 48000, msg.channels || 2);
+            } else if (msg.type === 'music_session_ended') {
+              setStatus('Story session ended.');
+              sessionActive = false;
+              btnStart.disabled = false;
+              btnStop.disabled = true;
+            }
+          } catch (e) {
+            console.warn('WS message parse error', e);
+          }
+        };
+        ws.onerror = () => { setStatus('WebSocket error.', 'error'); reject(); };
+        ws.onclose = () => { ws = null; };
+      });
+    }
+
+    /** Call after connectWS(); ensures we're in the server's story_audio subscriber set (important after server restart or reused connection). */
+    function ensureSubscribed() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'subscribe', channel: 'story_audio' }));
+      }
+    }
+
+    btnStart.addEventListener('click', async () => {
+      btnStart.disabled = true;
+      setStatus('Connecting WebSocket & starting story session…');
+      try {
+        // Connect and subscribe FIRST so we don't miss early Lyria chunks
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          gainNode = audioContext.createGain();
+          gainNode.gain.value = 1.2;
+          gainNode.connect(audioContext.destination);
+        }
+        if (audioContext.state === 'suspended') await audioContext.resume();
+        nextStartTime = 0;
+        chunksReceived = 0;
+        await connectWS();
+        ensureSubscribed();
+        // Give the server a moment to process the subscribe message before we start Lyria
+        await new Promise((r) => setTimeout(r, 500));
+        const res = await fetch(API + '/api/story/start', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          setStatus('Start failed: ' + (data.details || data.error || res.status), 'error');
+          btnStart.disabled = false;
+          return;
+        }
+        sessionActive = true;
+        btnStop.disabled = false;
+        setStatus('Session started. Waiting for Lyria audio chunks…', 'playing');
+      } catch (e) {
+        setStatus('Request failed: ' + e.message, 'error');
+        btnStart.disabled = false;
+      }
+    });
+
+    setInterval(async () => {
+      if (!sessionActive) { serverChunksEl.textContent = ''; return; }
+      try {
+        const r = await fetch(API + '/api/story/debug');
+        const d = await r.json();
+        serverChunksEl.textContent = d.sessionActive ? 'Server received ' + (d.lyriaChunksReceived || 0) + ' chunks from Lyria' : '';
+      } catch (_) {}
+    }, 2000);
+
+    btnStop.addEventListener('click', async () => {
+      try {
+        await fetch(API + '/api/story/stop', { method: 'POST' });
+        sessionActive = false;
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+        setCurrent('');
+        setStatus('Session stopped.');
+      } catch (e) {
+        setStatus('Stop failed: ' + e.message, 'error');
+      }
+    });
+
+    async function sendMood(preset) {
+      if (!sessionActive) {
+        setStatus('Start the session first.', 'error');
+        return;
+      }
+      setStatus('Updating music: ' + preset.label + '…');
+      try {
+        const res = await fetch(API + '/api/music/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            theme: preset.theme,
+            mood: preset.mood,
+            intensity: preset.intensity,
+            emotion: preset.emotion,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.updated) {
+          setCurrent(preset.label);
+          setStatus('Music updated. Transitioning…', 'playing');
+        } else if (data.skipped) {
+          setStatus('Update skipped (throttled). Try a different preset.', '');
+        } else {
+          setStatus(data.error || 'Update failed', 'error');
+        }
+      } catch (e) {
+        setStatus('Update failed: ' + e.message, 'error');
+      }
+    }
+
+    presets.forEach((p) => {
+      const btn = document.createElement('button');
+      btn.className = 'mood';
+      btn.textContent = p.label;
+      btn.addEventListener('click', () => sendMood(p));
+      presetsEl.appendChild(btn);
+    });
+
+    btnTestMusic.addEventListener('click', async () => {
+      btnTestMusic.disabled = true;
+      setStatus('Loading batch Lyria (calm)…');
+      try {
+        const url = API + '/api/music/generate?mood=calm';
+        const res = await fetch(url);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText, details: '' }));
+          setStatus(err.details || err.error || 'Batch Lyria failed.', 'error');
+          btnTestMusic.disabled = false;
+          return;
+        }
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const audio = new Audio(blobUrl);
+        audio.onloadeddata = () => setStatus('Playing batch Lyria (calm). You should hear music.', 'playing');
+        audio.onerror = () => {
+          setStatus('Playback failed.', 'error');
+          URL.revokeObjectURL(blobUrl);
+        };
+        audio.onended = () => {
+          URL.revokeObjectURL(blobUrl);
+          btnTestMusic.disabled = false;
+          setStatus('Test music ended.');
+        };
+        await audio.play();
+      } catch (e) {
+        setStatus('Request failed: ' + e.message, 'error');
+        btnTestMusic.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

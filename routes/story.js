@@ -29,7 +29,7 @@ let activeStorySession = null;
 
 /**
  * POST /api/story/start
- * Start a bedtime story session: open Lyria RealTime, set initial prompts, start play.
+ * Start a bedtime story session: wait for at least one subscriber, then open Lyria RealTime and start play.
  */
 router.post('/story/start', async (req, res) => {
   if (activeStorySession) {
@@ -37,13 +37,30 @@ router.post('/story/start', async (req, res) => {
   }
 
   const broadcastStoryAudio = req.app.locals.broadcastStoryAudio;
+  const getStoryAudioSubscriberCount = req.app.locals.getStoryAudioSubscriberCount;
   if (!broadcastStoryAudio) {
     return res.status(500).json({ error: 'Story audio broadcast not configured' });
   }
 
   try {
+    // Wait for at least one client to subscribe so we don't broadcast to nobody
+    const deadline = Date.now() + 5000;
+    while (getStoryAudioSubscriberCount() < 1 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (getStoryAudioSubscriberCount() < 1) {
+      console.warn('[STORY] Starting Lyria with no subscribers — client should send subscribe before calling /story/start');
+    } else {
+      console.log('[STORY] Subscriber(s) ready, starting Lyria RealTime');
+    }
+
     const handle = await createLyriaRealtimeSession({
       onAudioChunk(buf) {
+        if (!req.app.locals._lyriaChunkCount) req.app.locals._lyriaChunkCount = 0;
+        req.app.locals._lyriaChunkCount++;
+        if (req.app.locals._lyriaChunkCount <= 3 || req.app.locals._lyriaChunkCount % 20 === 0) {
+          console.log('[STORY] Lyria audio chunk #' + req.app.locals._lyriaChunkCount + ', size=' + buf.length);
+        }
         broadcastStoryAudio(buf);
       },
       onClose() {
@@ -64,6 +81,7 @@ router.post('/story/start', async (req, res) => {
 
     activeStorySession = { handle };
     resetThrottle();
+    req.app.locals._lyriaChunkCount = 0;
 
     res.json({ ok: true, message: 'Bedtime story session started' });
   } catch (err) {
@@ -142,6 +160,15 @@ router.post('/story/stop', (req, res) => {
  */
 router.get('/story/status', (req, res) => {
   res.json({ active: !!activeStorySession });
+});
+
+/**
+ * GET /api/story/debug
+ * Return chunk count from Lyria (for debugging no-audio issues).
+ */
+router.get('/story/debug', (req, res) => {
+  const count = req.app.locals._lyriaChunkCount ?? 0;
+  res.json({ lyriaChunksReceived: count, sessionActive: !!activeStorySession });
 });
 
 function resolveCampaignId(req) {

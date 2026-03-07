@@ -41,9 +41,11 @@ wss.on('connection', (ws) => {
 
   ws.on('message', (data) => {
     try {
-      const msg = typeof data === 'string' ? JSON.parse(data) : null;
+      const raw = typeof data === 'string' ? data : (Buffer.isBuffer(data) ? data.toString() : null);
+      const msg = raw ? JSON.parse(raw) : null;
       if (msg?.type === 'subscribe' && msg?.channel === 'story_audio') {
         storyAudioSubscribers.add(ws);
+        console.log('[WS] Subscriber added to story_audio (total ' + storyAudioSubscribers.size + ')');
       }
     } catch (_) {}
   });
@@ -65,8 +67,19 @@ app.locals.broadcast = (message) => {
 };
 
 // Send Lyria RealTime PCM to story-audio subscribers (base64 JSON for compatibility)
+app.locals.getStoryAudioSubscriberCount = () => storyAudioSubscribers.size;
 app.locals.broadcastStoryAudio = (pcmBuffer) => {
   const payload = pcmBuffer.toString('base64');
+  const n = storyAudioSubscribers.size;
+  if (!app.locals._broadcastCount) app.locals._broadcastCount = 0;
+  app.locals._broadcastCount++;
+  if (n === 0) {
+    if (app.locals._broadcastCount <= 5) console.log('[WS] No subscribers for story audio (chunk #' + app.locals._broadcastCount + ')');
+  } else {
+    if (app.locals._broadcastCount <= 5 || app.locals._broadcastCount % 20 === 0) {
+      console.log('[WS] Broadcasting story audio to ' + n + ' subscriber(s), chunk #' + app.locals._broadcastCount + ', size=' + pcmBuffer.length);
+    }
+  }
   for (const ws of storyAudioSubscribers) {
     try {
       if (ws.readyState === 1) {
@@ -98,6 +111,7 @@ app.get('/', (req, res) => {
     name: 'Living Worlds — AI Dungeon Master',
     version: '1.0.0',
     testAudio: 'GET /test-audio.html to verify narration + music playback',
+    testStoryAudio: 'GET /test-story-audio.html to test bedtime story moods and emotions (Lyria RealTime)',
     endpoints: {
       action: 'POST /api/action',
       dice: 'POST /api/dice',

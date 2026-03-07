@@ -39,11 +39,27 @@ export async function createLyriaRealtimeSession(opts) {
     model: LYRIA_MODEL,
     callbacks: {
       onmessage(message) {
-        const chunk = message.audioChunk;
-        if (chunk?.data) {
-          const buf = Buffer.from(chunk.data, 'base64');
+        // SDK assigns parsed JSON onto LiveMusicServerMessage; API may use snake_case (server_content, audio_chunks)
+        let chunk = message.audioChunk;
+        if (!chunk && message.serverContent?.audioChunks?.length > 0) {
+          chunk = message.serverContent.audioChunks[0];
+        }
+        if (!chunk && message.server_content?.audio_chunks?.length > 0) {
+          chunk = message.server_content.audio_chunks[0];
+        }
+        const data = chunk?.data ?? chunk?.bytes;
+        if (data) {
+          const buf = Buffer.from(data, 'base64');
           if (onAudioChunk && buf.length > 0) {
             onAudioChunk(buf);
+          }
+        } else if (message.serverContent || message.server_content) {
+          if (!createLyriaRealtimeSession._loggedShape) {
+            createLyriaRealtimeSession._loggedShape = true;
+            const sc = message.serverContent || message.server_content;
+            console.log('[LYRIA_REALTIME] serverContent keys:', sc ? Object.keys(sc) : []);
+            if (sc?.audioChunks?.length) console.log('[LYRIA_REALTIME] audioChunks[0] keys:', Object.keys(sc.audioChunks[0] || {}));
+            if (sc?.audio_chunks?.length) console.log('[LYRIA_REALTIME] audio_chunks[0] keys:', Object.keys(sc.audio_chunks[0] || {}));
           }
         }
       },

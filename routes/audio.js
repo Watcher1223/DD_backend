@@ -54,10 +54,16 @@ router.get('/music/generate', async (req, res) => {
       res.setHeader('Cache-Control', 'public, max-age=3600');
       return res.send(wavBuffer);
     }
-    return res.status(502).json({ error: 'Music generation failed. Lyria (Vertex AI) required; ensure GOOGLE_CLOUD_PROJECT is set and billing is enabled.' });
+    return res.status(502).json({
+      error: 'Music generation failed',
+      details: 'Vertex Lyria returned no audio (e.g. recitation block). Set GOOGLE_CLOUD_PROJECT and try a different mood or LYRIA_PROMPT_OVERRIDE.',
+    });
   } catch (err) {
     console.error('[MUSIC] Lyria generate error:', err.message);
-    return res.status(502).json({ error: 'Music generation failed. Lyria (Vertex AI) required; ensure GOOGLE_CLOUD_PROJECT is set and billing is enabled.' });
+    return res.status(502).json({
+      error: 'Music generation failed',
+      details: err.message || 'Check GOOGLE_CLOUD_PROJECT and billing.',
+    });
   }
 });
 

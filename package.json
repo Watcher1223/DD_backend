@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test:story": "node scripts/test-story-backend.js"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",

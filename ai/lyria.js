@@ -8,17 +8,20 @@ import { GoogleAuth } from 'google-auth-library';
 const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT;
 const VERTEX_LOCATION = process.env.VERTEX_AI_LOCATION || 'us-central1';
 
-// Lyria 2: minimal prompts to avoid recitation blocks (no genre terms, no famous-style phrases)
+// Lyria 2: very short, generic prompts to avoid recitation blocks (Vertex can block on genre/famous-style terms)
 const MOOD_PROMPTS = {
-  tavern: 'Instrumental only. Soft, warm, quiet. No lyrics or vocals.',
-  forest: 'Instrumental only. Open, soft, peaceful. No lyrics or vocals.',
-  battle: 'Instrumental only. Rhythmic, intense, short. No lyrics or vocals.',
-  mystery: 'Instrumental only. Sparse, quiet, minor. No lyrics or vocals.',
-  victory: 'Instrumental only. Bright, short, uplifting. No lyrics or vocals.',
-  danger: 'Instrumental only. Low notes, slow, tense. No lyrics or vocals.',
-  calm: 'Instrumental only. Slow, soft, simple. No lyrics or vocals.',
-  epic: 'Instrumental only. Broad, short, neutral. No lyrics or vocals.',
+  tavern: 'Instrumental. Soft and quiet. No vocals.',
+  forest: 'Instrumental. Peaceful and soft. No vocals.',
+  battle: 'Instrumental. Rhythmic and intense. No vocals.',
+  mystery: 'Instrumental. Quiet, sparse. No vocals.',
+  victory: 'Instrumental. Uplifting, short. No vocals.',
+  danger: 'Instrumental. Slow, tense. No vocals.',
+  calm: 'Instrumental. Soft, slow. No vocals.',
+  epic: 'Instrumental. Broad, neutral. No vocals.',
 };
+
+// Fallback if recitation block: single minimal prompt
+const RECITATION_FALLBACK_PROMPT = 'Instrumental only. No vocals. Ambient.';
 
 /**
  * Whether Vertex AI Lyria 2 is configured (Google Cloud project set).
@@ -37,12 +40,12 @@ export async function generateLyriaAudio(mood) {
     return null;
   }
   const normalizedMood = mood.toLowerCase().trim();
-  const prompt =
+  let prompt =
     process.env.LYRIA_PROMPT_OVERRIDE ||
     MOOD_PROMPTS[normalizedMood] ||
     MOOD_PROMPTS.calm;
 
-  try {
+  const tryGenerate = async (p) => {
     const auth = new GoogleAuth({
       scopes: ['https://www.googleapis.com/auth/cloud-platform'],
     });
@@ -50,7 +53,7 @@ export async function generateLyriaAudio(mood) {
     const token = await client.getAccessToken();
     if (!token.token) {
       console.error('[LYRIA] No access token from Google Auth');
-      return null;
+      return { buffer: null, status: null, body: null };
     }
 
     const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${GOOGLE_CLOUD_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/lyria-002:predict`;
@@ -61,32 +64,42 @@ export async function generateLyriaAudio(mood) {
         Authorization: `Bearer ${token.token}`,
       },
       body: JSON.stringify({
-        instances: [{ prompt }],
+        instances: [{ prompt: p }],
         parameters: {},
       }),
     });
 
+    const errText = await res.text();
     if (!res.ok) {
-      const errText = await res.text();
-      console.error('[LYRIA] Vertex predict error:', res.status, errText);
-      return null;
+      return { buffer: null, status: res.status, body: errText };
     }
-
-    const data = await res.json();
-    const predictions = data.predictions;
-    if (!predictions || !predictions.length) {
-      console.error('[LYRIA] No predictions in response');
-      return null;
+    try {
+      const data = JSON.parse(errText);
+      const predictions = data.predictions;
+      if (!predictions || !predictions.length) {
+        return { buffer: null, status: res.status, body: errText };
+      }
+      const first = predictions[0];
+      const b64 = first.audioContent ?? first.bytesBase64Encoded ?? first.bytesBase64encoded;
+      if (!b64) return { buffer: null, status: res.status, body: errText };
+      return { buffer: Buffer.from(b64, 'base64'), status: res.status, body: null };
+    } catch {
+      return { buffer: null, status: res.status, body: errText };
     }
+  };
 
-    const first = predictions[0];
-    const b64 = first.audioContent ?? first.bytesBase64Encoded ?? first.bytesBase64encoded;
-    if (!b64) {
-      console.error('[LYRIA] No audioContent/bytesBase64Encoded in prediction');
-      return null;
+  try {
+    let result = await tryGenerate(prompt);
+    if (result.buffer) return result.buffer;
+    if (result.status === 400 && result.body && result.body.includes('recitation')) {
+      console.warn('[LYRIA] Recitation block, retrying with minimal prompt');
+      result = await tryGenerate(RECITATION_FALLBACK_PROMPT);
+      if (result.buffer) return result.buffer;
     }
-
-    return Buffer.from(b64, 'base64');
+    if (result.body) {
+      console.error('[LYRIA] Vertex predict error:', result.status, result.body);
+    }
+    return null;
   } catch (err) {
     console.error('[LYRIA] Vertex generation error:', err.message);
     return null;
