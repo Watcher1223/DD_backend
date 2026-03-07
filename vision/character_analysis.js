@@ -10,7 +10,8 @@ import { parseGeminiJson } from '../ai/parse_json.js';
 import { parseFrame } from './frame_utils.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_VISION_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
+const GEMINI_VISION_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_VISION_MODEL}:generateContent`;
 
 const ANALYSIS_PROMPT = `Analyze this image and identify every person visible.
 For each person, provide a structured description of their appearance.
