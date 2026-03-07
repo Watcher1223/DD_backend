@@ -139,8 +139,8 @@ router.post('/camera/analyze', async (req, res) => {
   }
 
   const { frame } = req.body;
-  if (!frame) {
-    return res.status(400).json({ error: 'frame is required (base64 encoded image)' });
+  if (!frame || isEmptyFrame(frame)) {
+    return res.status(202).json({ ready: false, message: 'Camera not ready yet — waiting for video stream' });
   }
 
   try {
@@ -148,6 +148,9 @@ router.post('/camera/analyze', async (req, res) => {
     broadcastProfileUpdate(req, campaignId, result, 'local');
     res.json(result);
   } catch (err) {
+    if (isEmptyFrameError(err)) {
+      return res.status(202).json({ ready: false, message: 'Camera not ready yet — waiting for video stream' });
+    }
     console.error('[CAMERA] Analysis error:', err);
     const status = err.message && (err.message.includes('required') || err.message.includes('failed')) ? 503 : 500;
     res.status(status).json({ error: 'Character analysis failed', details: err.message });
@@ -201,8 +204,8 @@ router.post('/camera/remote/:code', async (req, res) => {
   }
 
   const { frame } = req.body;
-  if (!frame) {
-    return res.status(400).json({ error: 'frame is required (base64 encoded image)' });
+  if (!frame || isEmptyFrame(frame)) {
+    return res.status(202).json({ ready: false, message: 'Camera not ready yet — waiting for video stream' });
   }
 
   try {
@@ -210,11 +213,32 @@ router.post('/camera/remote/:code', async (req, res) => {
     broadcastProfileUpdate(req, campaignId, result, 'phone');
     res.json(result);
   } catch (err) {
+    if (isEmptyFrameError(err)) {
+      return res.status(202).json({ ready: false, message: 'Camera not ready yet — waiting for video stream' });
+    }
     console.error('[CAMERA REMOTE] Analysis error:', err);
     const status = err.message && (err.message.includes('required') || err.message.includes('failed')) ? 503 : 500;
     res.status(status).json({ error: 'Character analysis failed', details: err.message });
   }
 });
+
+/**
+ * Check if a raw frame string is obviously empty (camera not producing pixels yet).
+ * @param {string} frame
+ * @returns {boolean}
+ */
+function isEmptyFrame(frame) {
+  return frame === 'data:,' || frame === 'data:;base64,' || frame.length < 200;
+}
+
+/**
+ * Check if an error was caused by an empty/too-small frame.
+ * @param {Error} err
+ * @returns {boolean}
+ */
+function isEmptyFrameError(err) {
+  return err.message?.includes('Empty frame') || err.message?.includes('too small');
+}
 
 /**
  * Broadcast a WebSocket event when profiles are updated, so the desktop client can refresh.
