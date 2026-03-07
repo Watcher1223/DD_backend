@@ -7,7 +7,7 @@
 // ═══════════════════════════════════════════════
 
 import { parseGeminiJson } from '../ai/parse_json.js';
-import { parseFrame } from './frame_utils.js';
+import { parseFrame } from '../utils/media.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';

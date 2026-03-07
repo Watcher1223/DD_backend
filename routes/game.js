@@ -181,6 +181,7 @@ router.get('/health', (req, res) => {
     campaign_events: getEventCount(defaultId),
     has_gemini: !!process.env.GEMINI_API_KEY,
     has_vision: !!process.env.GEMINI_API_KEY,
+    has_speech: !!process.env.GEMINI_API_KEY,
     has_nanobanana: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.NANOBANANA_API_KEY),
     has_lyria: !!(process.env.GOOGLE_CLOUD_PROJECT || process.env.VERTEX_AI_PROJECT || process.env.LYRIA_API_KEY),
   });

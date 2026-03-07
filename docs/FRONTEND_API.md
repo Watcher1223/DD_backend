@@ -29,6 +29,7 @@ Before or after loading the app, call the health endpoint to know what’s live 
   "campaign_events": 0,
   "has_gemini": true,
   "has_vision": true,
+  "has_speech": true,
   "has_nanobanana": true,
   "has_lyria": true
 }
@@ -40,6 +41,7 @@ Before or after loading the app, call the health endpoint to know what’s live 
 | `campaign_events` | number | Event count for the default campaign (persisted in DB). |
 | `has_gemini` | boolean | `true` = Gemini configured for story. `false` = action will return 503 until GEMINI_API_KEY is set. |
 | `has_vision` | boolean | `true` = Camera character analysis available (uses same Gemini key). `false` = camera endpoints will return 503. |
+| `has_speech` | boolean | `true` = Speech-to-text available (uses same Gemini key). `false` = transcription endpoint will return 503. |
 | `has_nanobanana` | boolean | `true` = NanoBanana or Vertex Imagen available for images. `false` = action will fail for image until configured. |
 | `has_lyria` | boolean | `true` = Vertex Lyria 2 available for music. `false` = music will return 502 until GOOGLE_CLOUD_PROJECT + billing. |
 
@@ -367,6 +369,51 @@ Return stored character profiles for a campaign.
 
 ---
 
+## Speech-to-text
+
+Transcribe audio recordings using Gemini multimodal. The transcript can be used as the `action` text in `POST /api/action`, enabling voice input alongside typed text.
+
+### `POST /api/speech/transcribe`
+
+Transcribe a recorded audio clip to text.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `audio` | string | yes | Base64-encoded audio. Can include the `data:audio/...;base64,` prefix or be raw base64. Supports webm, ogg, mp4, wav. |
+
+**Response (200):**
+
+```json
+{
+  "transcript": "I open the chest and look inside",
+  "elapsed_ms": 850
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `transcript` | string | Transcribed text. Empty string if no speech was detected. |
+| `elapsed_ms` | number | Server-side latency in ms. |
+
+**Errors:**
+
+- `400` -- Missing `audio`: `{ "error": "audio is required (base64 encoded audio)" }`
+- `503` -- No Gemini key or API failure: `{ "error": "Transcription failed", "details": "..." }`
+- `500` -- Unexpected error: `{ "error": "Transcription failed", "details": "..." }`
+
+**Latency:** Expect 500-1500ms depending on audio length.
+
+**Frontend recommendations:**
+
+- Use `MediaRecorder` with `audio/webm` MIME type to capture audio from the microphone.
+- Convert the recorded blob to base64 before sending.
+- Display the returned transcript in the text input field so the user can review/edit before submitting as an action.
+- Check `has_speech` from the health endpoint before showing the mic button.
+
+---
+
 ## Other endpoints
 
 ### `GET /api/moods`
@@ -534,8 +581,9 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 
 ## Design checklist for real data
 
-- [ ] Call `GET /api/health` on load and use `has_gemini`, `has_vision`, `has_nanobanana`, `has_lyria` to adapt UI (labels, disabled features, or “demo mode”).
+- [ ] Call `GET /api/health` on load and use `has_gemini`, `has_vision`, `has_speech`, `has_nanobanana`, `has_lyria` to adapt UI (labels, disabled features, or “demo mode”).
 - [ ] If `has_vision` is true, offer camera capture for character analysis before starting the story.
+- [ ] If `has_speech` is true, show a microphone button for voice input alongside the text field.
 - [ ] Show loading state for `POST /api/action` (2–5+ seconds typical).
 - [ ] Display `narration` and play `narrationAudioUrl` for voice when desired.
 - [ ] Use `image.imageUrl` for the scene image.
@@ -557,6 +605,7 @@ Same shape as the REST `POST /api/action` response. Use this for real-time updat
 | POST | `/api/action` | Send action, get narration + image + music |
 | POST | `/api/camera/analyze` | Analyze webcam frame for character appearances |
 | GET | `/api/camera/profiles` | Get stored character profiles |
+| POST | `/api/speech/transcribe` | Transcribe audio to text |
 | GET | `/api/campaign` | Get campaign state (persisted) |
 | POST | `/api/campaign/reset` | Reset campaign |
 | GET | `/api/campaigns` | List campaigns |

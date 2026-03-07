@@ -5,7 +5,7 @@
 // with simulated fallback for demo.
 // ═══════════════════════════════════════════════
 
-import { parseFrame } from './frame_utils.js';
+import { parseFrame } from '../utils/media.js';
 import { parseGeminiJson } from '../ai/parse_json.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;

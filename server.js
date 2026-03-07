@@ -12,6 +12,7 @@ import http from 'http';
 import gameRoutes from './routes/game.js';
 import audioRoutes from './routes/audio.js';
 import cameraRoutes from './routes/camera.js';
+import speechRoutes from './routes/speech.js';
 import storyRoutes from './routes/story.js';
 import { initDb } from './db/index.js';
 
@@ -102,6 +103,7 @@ app.locals.broadcastStoryAudioEnd = () => {
 // ── Routes ──
 app.use('/api', audioRoutes);
 app.use('/api', cameraRoutes);
+app.use('/api', speechRoutes);
 app.use('/api', gameRoutes);
 app.use('/api', storyRoutes);
 
@@ -117,6 +119,7 @@ app.get('/', (req, res) => {
       dice: 'POST /api/dice',
       cameraAnalyze: 'POST /api/camera/analyze (character vision)',
       cameraProfiles: 'GET /api/camera/profiles (stored profiles)',
+      speechTranscribe: 'POST /api/speech/transcribe (speech-to-text)',
       campaign: 'GET /api/campaign',
       campaigns: 'GET /api/campaigns, POST /api/campaigns',
       reset: 'POST /api/campaign/reset',
@@ -144,6 +147,7 @@ server.listen(PORT, () => {
   console.log('  Database:  connected');
   console.log(`  Gemini:    ${process.env.GEMINI_API_KEY ? 'configured' : 'required (set GEMINI_API_KEY)'}`);
   console.log(`  Vision:    ${process.env.GEMINI_API_KEY ? 'configured (camera analysis)' : 'requires GEMINI_API_KEY'}`);
+  console.log(`  Speech:    ${process.env.GEMINI_API_KEY ? 'configured (speech-to-text)' : 'requires GEMINI_API_KEY'}`);
   console.log(`  NanoBanana:${process.env.NANOBANANA_API_KEY ? 'NanoBanana 2' : process.env.GOOGLE_CLOUD_PROJECT ? 'Imagen (Vertex)' : 'required (NANOBANANA_API_KEY or GOOGLE_CLOUD_PROJECT)'}`);
   console.log(`  Lyria:     ${process.env.GOOGLE_CLOUD_PROJECT ? 'Vertex Lyria 2' : 'required (GOOGLE_CLOUD_PROJECT)'}`);
   console.log(`  Lyria RT:  ${process.env.GEMINI_API_KEY ? 'Gemini API (bedtime story)' : 'use GEMINI_API_KEY for story mode'}`);

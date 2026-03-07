@@ -1,18 +1,37 @@
-# Camera-to-Gemini Vision Pipeline — Frontend Handoff
+# Multimodal Pipeline — Frontend Handoff
 
-Backend is complete. This doc covers everything needed to integrate the camera system on the frontend.
+Backend is complete. This doc covers everything needed to integrate the camera (vision) and microphone (speech-to-text) systems on the frontend.
 
 ---
 
 ## What the backend does
 
+**Camera (vision):**
 1. Accepts a base64-encoded webcam frame
-2. Sends it to Gemini Vision (gemini-2.0-flash multimodal)
+2. Sends it to Gemini 2.5 Flash (multimodal)
 3. Returns structured character appearance descriptions (hair, clothing, features, age range)
 4. Persists profiles in SQLite, keyed by campaign + label (e.g. "child", "adult")
 5. Automatically injects stored profiles into the story engine prompt and `scene_prompt` on every `POST /api/action` call
 
-The frontend is responsible for camera access, frame capture, and deciding when to send frames.
+**Microphone (speech-to-text):**
+1. Accepts a base64-encoded audio recording
+2. Sends it to Gemini 2.5 Flash (multimodal)
+3. Returns plain text transcript
+4. Frontend uses transcript as typed action text (via `POST /api/action`)
+
+Both use the same Gemini API key and model (`GEMINI_VISION_MODEL`, defaults to `gemini-2.5-flash`). The frontend is responsible for camera/microphone access, capture, and deciding when to send data.
+
+---
+
+## Quick reference
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/health` | GET | Check `has_vision` and `has_speech` before showing UI |
+| `/api/camera/analyze` | POST | Send webcam frame, get character descriptions, stores profiles |
+| `/api/camera/profiles` | GET | Retrieve stored profiles (restore on reload) |
+| `/api/speech/transcribe` | POST | Send audio recording, get text transcript |
+| `/api/action` | POST | Send action text (typed or from transcript), profiles auto-injected |
 
 ---
 
@@ -20,10 +39,12 @@ The frontend is responsible for camera access, frame capture, and deciding when 
 
 ```
 vision/character_analysis.js   — Gemini Vision call, returns structured JSON
-vision/frame_utils.js          — Shared MIME type detection for base64 frames
+ai/transcribe.js               — Gemini audio transcription, returns plain text
+utils/media.js                 — Shared MIME type detection for image + audio data URLs
 ai/parse_json.js               — Shared Gemini JSON response parser
 ai/gemini.js                   — Story engine (buildAppearanceContext injects profiles)
 routes/camera.js               — POST /api/camera/analyze, GET /api/camera/profiles
+routes/speech.js               — POST /api/speech/transcribe
 routes/resolve_campaign.js     — Shared campaign ID resolution
 db/index.js                    — session_profiles table, upsert/get/clear helpers
 ```
@@ -119,15 +140,16 @@ Returns an empty array if no frames have been analyzed yet: `{ "profiles": [] }`
 
 ### `GET /api/health`
 
-Check if vision is available before showing camera UI.
+Check capabilities before showing camera/mic UI.
 
 ```json
 {
-  "has_vision": true
+  "has_vision": true,
+  "has_speech": true
 }
 ```
 
-`has_vision` is true when `GEMINI_API_KEY` is set. If false, don't show the camera capture flow.
+Both are true when `GEMINI_API_KEY` is set. If false, hide the respective UI.
 
 ---
 
@@ -253,7 +275,7 @@ if (profiles.length > 0) {
 
 ```
 App loads
-  → GET /api/health (check has_vision)
+  → GET /api/health (check has_vision, has_speech)
   → GET /api/camera/profiles (check for existing profiles)
   ↓
 If no profiles:
@@ -270,7 +292,9 @@ If profiles exist:
   → Option to "Re-capture" or "Continue"
   ↓
 Game begins
-  → POST /api/action (profiles injected automatically)
+  → Text input field + mic button (if has_speech)
+  → User types OR clicks mic → records → POST /api/speech/transcribe → transcript fills text field
+  → User confirms/edits → POST /api/action (profiles injected automatically)
 ```
 
 ---
@@ -302,3 +326,93 @@ curl -s http://localhost:4300/api/camera/profiles | python3 -m json.tool
 4. **One capture is enough** — you don't need continuous streaming. A single good frame establishes profiles for the entire session.
 5. **Gemini may see things differently each time** — if you re-analyze, the labels or descriptions may shift slightly. The upsert-by-label design handles this, but the UI should let the user confirm.
 6. **Empty room** — if no people are visible, `people` will be an empty array and nothing gets stored. Handle this in the UI.
+
+---
+
+## Speech-to-text (same multimodal system)
+
+The backend also provides speech transcription via Gemini, using the same API key and multimodal pattern as the camera pipeline. This enables voice input alongside typed actions.
+
+### Endpoint: `POST /api/speech/transcribe`
+
+**Request:** `{ "audio": "<base64 string or data URL>" }`
+
+**Response:** `{ "transcript": "I open the chest", "elapsed_ms": 850 }`
+
+Supports `audio/webm`, `audio/ogg`, `audio/mp4`, `audio/wav`. The MIME type is auto-detected from the data URL prefix, defaulting to `audio/webm` for raw base64.
+
+### Frontend recording pattern
+
+```javascript
+// 1. Get microphone access
+const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+// 2. Set up MediaRecorder
+const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+const chunks = [];
+
+mediaRecorder.ondataavailable = (e) => {
+  if (e.data.size > 0) chunks.push(e.data);
+};
+
+// 3. When recording stops, send to backend
+mediaRecorder.onstop = async () => {
+  const blob = new Blob(chunks, { type: 'audio/webm' });
+  const reader = new FileReader();
+  reader.onloadend = async () => {
+    const base64 = reader.result; // includes data:audio/webm;base64, prefix
+    const res = await fetch('/api/speech/transcribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio: base64 }),
+    });
+    const { transcript } = await res.json();
+    // Display transcript in the action text field
+  };
+  reader.readAsDataURL(blob);
+};
+
+// 4. Start/stop recording
+mediaRecorder.start();
+// ... user clicks stop ...
+mediaRecorder.stop();
+
+// 5. Clean up when done
+stream.getTracks().forEach(track => track.stop());
+```
+
+### Integration with the action flow
+
+The transcript is just text. Submit it as the `action` field to `POST /api/action`:
+
+```javascript
+const { transcript } = await transcribeAudio(audioBase64);
+// Optionally show in text field for user to edit
+// Then submit:
+await fetch('/api/action', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ action: transcript }),
+});
+```
+
+### Health check
+
+```javascript
+const health = await fetch('/api/health').then(r => r.json());
+if (health.has_speech) {
+  // Show microphone button
+}
+```
+
+### Testing with curl
+
+```bash
+# Record a short WAV (macOS)
+# or use any audio file you have
+AUDIO=$(base64 -i test-audio.wav)
+
+curl -s http://localhost:4300/api/speech/transcribe \
+  -H "Content-Type: application/json" \
+  -d "{\"audio\": \"$AUDIO\"}" | python3 -m json.tool
+```
