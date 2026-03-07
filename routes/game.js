@@ -9,6 +9,7 @@ import { generateStoryBeat } from '../ai/gemini.js';
 import { generateSceneImage } from '../ai/nanobanana.js';
 import { getMusicForMood, getAvailableMoods } from '../ai/lyria.js';
 import { detectDiceRoll } from '../vision/dice_detection.js';
+import { resolveCampaignId } from './resolve_campaign.js';
 import {
   getCampaign,
   appendEvent,
@@ -16,25 +17,12 @@ import {
   getOrCreateDefaultCampaign,
   resetCampaign,
   getEventCount,
-  campaignExists,
   listCampaigns,
   createCampaign,
   getSessionProfiles,
 } from '../db/index.js';
 
 const router = Router();
-
-function resolveCampaignId(req) {
-  const id = req.body?.campaignId ?? req.query?.campaignId;
-  if (id != null) {
-    const num = Number(id);
-    if (Number.isNaN(num) || !campaignExists(num)) {
-      return null;
-    }
-    return num;
-  }
-  return getOrCreateDefaultCampaign();
-}
 
 // ── POST /api/action — Main game loop endpoint ──
 // This is the core pipeline: action → narration → image → music

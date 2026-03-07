@@ -6,28 +6,13 @@
 
 import { Router } from 'express';
 import { analyzeCharacters } from '../vision/character_analysis.js';
+import { resolveCampaignId } from './resolve_campaign.js';
 import {
   upsertSessionProfile,
   getSessionProfiles,
-  getOrCreateDefaultCampaign,
-  campaignExists,
 } from '../db/index.js';
 
 const router = Router();
-
-/**
- * Resolve campaignId from the request body or query, falling back to the default.
- * Returns null if the provided id doesn't exist.
- */
-function resolveCampaignId(req) {
-  const id = req.body?.campaignId ?? req.query?.campaignId;
-  if (id != null) {
-    const num = Number(id);
-    if (Number.isNaN(num) || !campaignExists(num)) return null;
-    return num;
-  }
-  return getOrCreateDefaultCampaign();
-}
 
 /**
  * POST /api/camera/analyze

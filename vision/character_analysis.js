@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════
 
 import { parseGeminiJson } from '../ai/parse_json.js';
+import { parseFrame } from './frame_utils.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_VISION_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
@@ -54,7 +55,7 @@ export async function analyzeCharacters(frameBase64) {
     throw new Error('No frame provided for character analysis');
   }
 
-  const base64Data = stripDataUrlPrefix(frameBase64);
+  const frame = parseFrame(frameBase64);
 
   const res = await fetch(`${GEMINI_VISION_URL}?key=${GEMINI_API_KEY}`, {
     method: 'POST',
@@ -65,8 +66,8 @@ export async function analyzeCharacters(frameBase64) {
           { text: ANALYSIS_PROMPT },
           {
             inline_data: {
-              mime_type: 'image/jpeg',
-              data: base64Data,
+              mime_type: frame.mimeType,
+              data: frame.data,
             },
           },
         ],
@@ -95,9 +96,3 @@ export async function analyzeCharacters(frameBase64) {
   return parseGeminiJson(text, ANALYSIS_DEFAULTS);
 }
 
-/**
- * Strip the data URL prefix (e.g. "data:image/jpeg;base64,") if present.
- */
-function stripDataUrlPrefix(base64) {
-  return base64.replace(/^data:image\/\w+;base64,/, '');
-}

@@ -5,8 +5,13 @@
 // with simulated fallback for demo.
 // ═══════════════════════════════════════════════
 
+import { parseFrame } from './frame_utils.js';
+import { parseGeminiJson } from '../ai/parse_json.js';
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_VISION_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+
+const DICE_DEFAULTS = { detected: false, value: null };
 
 /**
  * Detect a dice roll from a base64-encoded webcam frame.
@@ -18,8 +23,7 @@ export async function detectDiceRoll(frameBase64) {
   // Use Gemini's multimodal capability to read the dice
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_gemini_api_key_here' && frameBase64) {
     try {
-      // Strip data URL prefix if present
-      const base64Data = frameBase64.replace(/^data:image\/\w+;base64,/, '');
+      const frame = parseFrame(frameBase64);
 
       const res = await fetch(`${GEMINI_VISION_URL}?key=${GEMINI_API_KEY}`, {
         method: 'POST',
@@ -32,8 +36,8 @@ export async function detectDiceRoll(frameBase64) {
               },
               {
                 inline_data: {
-                  mime_type: 'image/jpeg',
-                  data: base64Data,
+                  mime_type: frame.mimeType,
+                  data: frame.data,
                 },
               },
             ],
@@ -49,7 +53,7 @@ export async function detectDiceRoll(frameBase64) {
       const data = await res.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (text) {
-        const result = JSON.parse(text);
+        const result = parseGeminiJson(text, DICE_DEFAULTS);
         return {
           detected: result.detected,
           value: result.value,

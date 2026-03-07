@@ -89,6 +89,7 @@ server.listen(PORT, () => {
   console.log(`  WebSocket: ws://localhost:${PORT}`);
   console.log('  Database:  connected');
   console.log(`  Gemini:    ${process.env.GEMINI_API_KEY ? 'configured' : 'required (set GEMINI_API_KEY)'}`);
+  console.log(`  Vision:    ${process.env.GEMINI_API_KEY ? 'configured (camera analysis)' : 'requires GEMINI_API_KEY'}`);
   console.log(`  NanoBanana:${process.env.NANOBANANA_API_KEY ? 'NanoBanana 2' : process.env.GOOGLE_CLOUD_PROJECT ? 'Imagen (Vertex)' : 'required (NANOBANANA_API_KEY or GOOGLE_CLOUD_PROJECT)'}`);
   console.log(`  Lyria:     ${process.env.GOOGLE_CLOUD_PROJECT ? 'Vertex Lyria 2' : 'required (GOOGLE_CLOUD_PROJECT)'}`);
   console.log('');
