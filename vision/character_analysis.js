@@ -8,6 +8,7 @@
 
 import { parseGeminiJson } from '../ai/parse_json.js';
 import { parseFrame } from '../utils/media.js';
+import { fetchWithRetry } from '../utils/fetch_retry.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
@@ -67,7 +68,7 @@ export async function analyzeCharacters(frameBase64) {
 
   const frame = parseFrame(frameBase64);
 
-  const res = await fetch(`${GEMINI_VISION_URL}?key=${GEMINI_API_KEY}`, {
+  const res = await fetchWithRetry(`${GEMINI_VISION_URL}?key=${GEMINI_API_KEY}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -88,7 +89,7 @@ export async function analyzeCharacters(frameBase64) {
         responseMimeType: 'application/json',
       },
     }),
-  });
+  }, { label: 'CHARACTER VISION' });
 
   const data = await res.json();
 

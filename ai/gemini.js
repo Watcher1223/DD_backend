@@ -6,6 +6,7 @@
 
 import { parseGeminiJson } from './parse_json.js';
 import { THEME_KEYS } from './music_engine.js';
+import { fetchWithRetry } from '../utils/fetch_retry.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
@@ -99,7 +100,7 @@ export async function generateCharacterInjectionBeat(entrantDescription, current
 
   const userText = `The new person visible in the room: ${entrantDescription}.${currentStoryContext ? ` Current story setting: ${currentStoryContext}.` : ''}`;
 
-  const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+  const res = await fetchWithRetry(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -110,7 +111,7 @@ export async function generateCharacterInjectionBeat(entrantDescription, current
         responseMimeType: 'application/json',
       },
     }),
-  });
+  }, { label: 'GEMINI INJECT' });
 
   const data = await res.json();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -148,7 +149,7 @@ export async function extractThemeFromDescription(description) {
   }
 
   try {
-    const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+    const res = await fetchWithRetry(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -159,7 +160,7 @@ export async function extractThemeFromDescription(description) {
           responseMimeType: 'application/json',
         },
       }),
-    });
+    }, { label: 'GEMINI THEME' });
     const data = await res.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
     if (text) {
@@ -228,7 +229,7 @@ export async function generateBedtimeStoryBeat(playerAction, campaign, storySess
     throw new Error('Gemini API key required. Set GEMINI_API_KEY in .env');
   }
   try {
-    const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+    const res = await fetchWithRetry(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -240,7 +241,7 @@ export async function generateBedtimeStoryBeat(playerAction, campaign, storySess
           responseMimeType: 'application/json',
         },
       }),
-    });
+    }, { label: 'GEMINI BEDTIME' });
 
     const data = await res.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -294,7 +295,7 @@ export async function generateStoryBeat(playerAction, diceRoll, campaign, sessio
     throw new Error('Gemini API key required. Set GEMINI_API_KEY in .env (get one at https://aistudio.google.com/app/apikey).');
   }
   try {
-    const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+    const res = await fetchWithRetry(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -306,7 +307,7 @@ export async function generateStoryBeat(playerAction, diceRoll, campaign, sessio
             responseMimeType: 'application/json',
           },
         }),
-      });
+      }, { label: 'GEMINI STORY' });
 
       const data = await res.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
