@@ -195,7 +195,7 @@ function normalizeThemeFallback(text) {
  * @param {{ campaign_id: number, child_name: string, child_age: number, learning_goals: string[], story_energy: number }|null} [storySession]
  * @param {Array<{label: string, appearance: object}>} [sessionProfiles]
  * @param {string} [memoryContext] - Pre-summarized semantic memory from Chroma
- * @param {{ protagonist_description?: string, language?: string }} [options] - Optional overrides
+ * @param {{ protagonist_description?: string, language?: string, stage_characters?: Array<{ description: string, narration?: string, scene_prompt?: string }> }} [options] - Optional overrides
  * @returns {object} { narration, scene_prompt, theme, genre, mood, intensity, emotion, learning_moment, characters_mentioned, location, story_energy }
  */
 export async function generateBedtimeStoryBeat(playerAction, campaign, storySession, sessionProfiles, memoryContext, options = {}) {
@@ -204,6 +204,7 @@ export async function generateBedtimeStoryBeat(playerAction, campaign, storySess
   const appearanceContext = buildAppearanceContext(sessionProfiles);
   const protagonist_description = options?.protagonist_description;
   const language = options?.language;
+  const stage_characters = options?.stage_characters ?? [];
 
   const promptParts = [
     historyContext,
@@ -223,6 +224,11 @@ export async function generateBedtimeStoryBeat(playerAction, campaign, storySess
 
   if (protagonist_description && String(protagonist_description).trim()) {
     userPrompt = `The hero of the story is: ${String(protagonist_description).trim()}. Describe scenes with this character as the main focus. Keep the same JSON format.\n\n` + userPrompt;
+  }
+
+  if (stage_characters.length > 0) {
+    const list = stage_characters.map((c) => c.description).join('; ');
+    userPrompt = `Also in the scene (characters who have joined the story): ${list}. You may include them in the narration and in scene_prompt so they appear in the illustration. Keep the same JSON format.\n\n` + userPrompt;
   }
 
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_gemini_api_key_here') {

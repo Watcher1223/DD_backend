@@ -110,11 +110,17 @@
     </div>
     <div class="row">
       <button id="btnBeat" class="mood">Next story beat</button>
+      <label style="margin-left:0.5rem;"><input type="checkbox" id="autoContinueBeat" /> Auto-continue (video)</label>
     </div>
     <div id="beatWrap" style="display:none; margin-top:0.75rem;">
       <div id="beatNarration" style="font-style:italic; margin-bottom:0.5rem;"></div>
+      <div id="beatPlayNarrationWrap" style="margin-bottom:0.5rem; display:none;">
+        <button type="button" id="btnPlayNarration" class="mood" style="font-size:0.85rem;">🔊 Play narration</button>
+        <span id="beatNarrationError" style="font-size:0.8rem; color:#c62828; margin-left:0.5rem;"></span>
+      </div>
       <img id="beatImage" alt="Scene" style="max-width:100%; max-height:240px; border-radius:6px; display:none;" />
     </div>
+    <div id="faceInImageHint" style="font-size:0.8rem; color:#666; margin-top:0.5rem;"></div>
   </section>
 
   <div id="status" class="status">Start the session and subscribe to hear audio. Use a browser that supports Web Audio.</div>
@@ -169,6 +175,11 @@
     const beatWrap = document.getElementById('beatWrap');
     const beatNarrationEl = document.getElementById('beatNarration');
     const beatImageEl = document.getElementById('beatImage');
+    const beatPlayNarrationWrap = document.getElementById('beatPlayNarrationWrap');
+    const btnPlayNarration = document.getElementById('btnPlayNarration');
+    const beatNarrationErrorEl = document.getElementById('beatNarrationError');
+    const faceInImageHintEl = document.getElementById('faceInImageHint');
+    const autoContinueBeatCheckbox = document.getElementById('autoContinueBeat');
 
     let ws = null;
     let audioContext = null;
@@ -182,6 +193,8 @@
     let stageVisionIntervalId = null;
     let dollStream = null;
     let dollIntervalId = null;
+    let lastNarrationUrl = null;
+    let autoContinueBeat = false;
 
     function setStatus(msg, type = '') {
       statusEl.textContent = msg;
@@ -403,6 +416,102 @@
         if (statusData.userTheme && !themeStatusEl.textContent) themeStatusEl.textContent = 'Theme: ' + statusData.userTheme;
       } catch (_) {}
     }, 2000);
+
+    (async function setFaceInImageHint() {
+      try {
+        const r = await fetch(API + '/api/health');
+        const h = await r.json();
+        if (faceInImageHintEl) {
+          faceInImageHintEl.textContent = h.has_subject_customization
+            ? 'Your face can appear in story images (Vertex Imagen 3 is configured).'
+            : 'Your face in story images: set GOOGLE_CLOUD_PROJECT (and Vertex Imagen 3) in .env for subject customization.';
+        }
+      } catch (_) {}
+    })();
+
+    if (autoContinueBeatCheckbox) {
+      autoContinueBeatCheckbox.addEventListener('change', () => { autoContinueBeat = autoContinueBeatCheckbox.checked; });
+    }
+
+    function requestNextBeat() {
+      if (!sessionActive || !btnBeat || beatActionEl) return;
+      const action = (beatActionEl && beatActionEl.value.trim()) || 'What happens next?';
+      beatActionEl.value = '';
+      doBeatRequest(action);
+    }
+
+    function doBeatRequest(action) {
+      if (!sessionActive || !btnBeat) return;
+      btnBeat.disabled = true;
+      if (beatNarrationErrorEl) beatNarrationErrorEl.textContent = '';
+      setStatus('Generating story beat…');
+      fetch(API + '/api/story/beat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.error || data.details) {
+            setStatus('Beat failed: ' + (data.details || data.error), 'error');
+            btnBeat.disabled = false;
+            return;
+          }
+          if (beatWrap) beatWrap.style.display = 'block';
+          if (beatNarrationEl) beatNarrationEl.textContent = data.narration || '';
+          if (beatImageEl) {
+            const url = data.image?.imageUrl;
+            if (url) {
+              beatImageEl.src = url;
+              beatImageEl.style.display = 'block';
+            } else {
+              beatImageEl.removeAttribute('src');
+              beatImageEl.style.display = 'none';
+            }
+          }
+          lastNarrationUrl = data.narrationAudioUrl || null;
+          if (beatPlayNarrationWrap) {
+            beatPlayNarrationWrap.style.display = lastNarrationUrl ? 'block' : 'none';
+          }
+          setStatus('Playing narration…', 'playing');
+          if (lastNarrationUrl) {
+            const audio = new Audio(lastNarrationUrl);
+            audio.onended = () => {
+              btnBeat.disabled = false;
+              setStatus(autoContinueBeat ? 'Next beat…' : 'Story beat done. Ask for the next one.');
+              if (autoContinueBeat) setTimeout(requestNextBeat, 800);
+            };
+            audio.onerror = () => {
+              btnBeat.disabled = false;
+              if (beatNarrationErrorEl) beatNarrationErrorEl.textContent = 'Narration failed to load. Click Play narration to retry.';
+              setStatus('Narration could not play. Click "Play narration" below.', 'error');
+            };
+            audio.play().catch(() => {
+              btnBeat.disabled = false;
+              if (beatNarrationErrorEl) beatNarrationErrorEl.textContent = 'Autoplay blocked. Click Play narration.';
+              setStatus('Click "Play narration" to hear the story.', '');
+            });
+          } else {
+            btnBeat.disabled = false;
+            if (autoContinueBeat) setTimeout(requestNextBeat, 500);
+          }
+        })
+        .catch((e) => {
+          setStatus('Request failed: ' + e.message, 'error');
+          btnBeat.disabled = false;
+        });
+    }
+
+    if (btnPlayNarration) {
+      btnPlayNarration.addEventListener('click', () => {
+        if (!lastNarrationUrl) return;
+        if (beatNarrationErrorEl) beatNarrationErrorEl.textContent = '';
+        const audio = new Audio(lastNarrationUrl);
+        audio.onended = () => setStatus('Narration finished.');
+        audio.onerror = () => { if (beatNarrationErrorEl) beatNarrationErrorEl.textContent = 'Playback failed.'; };
+        audio.play().catch(() => { if (beatNarrationErrorEl) beatNarrationErrorEl.textContent = 'Play failed.'; });
+      });
+    }
 
     btnStop.addEventListener('click', async () => {
       stopCameraEmotionLoop();
@@ -647,51 +756,13 @@
     }
 
     if (btnBeat && beatActionEl) {
-      btnBeat.addEventListener('click', async () => {
+      btnBeat.addEventListener('click', () => {
         if (!sessionActive) {
           setStatus('Start the story session first.', 'error');
           return;
         }
         const action = beatActionEl.value.trim() || 'The hero explores the forest';
-        btnBeat.disabled = true;
-        setStatus('Generating story beat…');
-        try {
-          const res = await fetch(API + '/api/story/beat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action }),
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            setStatus('Beat failed: ' + (data.details || data.error || res.status), 'error');
-            btnBeat.disabled = false;
-            return;
-          }
-          if (beatWrap) beatWrap.style.display = 'block';
-          if (beatNarrationEl) beatNarrationEl.textContent = data.narration || '';
-          if (beatImageEl) {
-            const url = data.image?.imageUrl;
-            if (url) {
-              beatImageEl.src = url;
-              beatImageEl.style.display = 'block';
-            } else {
-              beatImageEl.removeAttribute('src');
-              beatImageEl.style.display = 'none';
-            }
-          }
-          setStatus('Playing narration…', 'playing');
-          if (data.narrationAudioUrl) {
-            const audio = new Audio(data.narrationAudioUrl);
-            audio.onended = () => { btnBeat.disabled = false; setStatus('Story beat done. Ask for the next one.'); };
-            audio.onerror = () => { btnBeat.disabled = false; setStatus('Narration play failed.', 'error'); };
-            audio.play().catch(() => { btnBeat.disabled = false; });
-          } else {
-            btnBeat.disabled = false;
-          }
-        } catch (e) {
-          setStatus('Request failed: ' + e.message, 'error');
-          btnBeat.disabled = false;
-        }
+        doBeatRequest(action);
       });
     }
 

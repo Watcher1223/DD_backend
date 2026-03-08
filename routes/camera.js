@@ -316,6 +316,13 @@ async function handleNewEntrant(session, stageResult, campaignId, broadcast, gen
 
   await applyCharacterInjectionToLyria(session, character_beat);
 
+  if (!session.stageCharacters) session.stageCharacters = [];
+  session.stageCharacters.push({
+    description: desc,
+    narration: character_beat.narration,
+    scene_prompt: character_beat.scene_prompt,
+  });
+
   const v2vPrompt = `A hero, a magical doll, and ${desc} in a ${session.userTheme || 'bedtime'} setting.`;
   if (broadcast) {
     broadcast(JSON.stringify({ type: 'v2v_prompt_updated', prompt: v2vPrompt }));

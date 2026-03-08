@@ -164,7 +164,7 @@ router.post('/story/start', async (req, res) => {
       markPromptsApplied({ theme, mood, intensity });
     }
 
-    activeStorySession = { handle, userTheme, campaignId, lastSeenPeopleCount: 0, lastSeenLabels: new Set(), language: req.body?.language || null };
+    activeStorySession = { handle, userTheme, campaignId, lastSeenPeopleCount: 0, lastSeenLabels: new Set(), language: req.body?.language || null, stageCharacters: [] };
     resetThrottle();
     req.app.locals._lyriaChunkCount = 0;
 
@@ -363,6 +363,12 @@ router.post('/story/stage-vision', async (req, res) => {
           scene_prompt: character_beat.scene_prompt,
         });
       }
+      if (!activeStorySession.stageCharacters) activeStorySession.stageCharacters = [];
+      activeStorySession.stageCharacters.push({
+        description: result.new_entrant_description,
+        narration: character_beat.narration,
+        scene_prompt: character_beat.scene_prompt,
+      });
       if (generateImage && character_beat.scene_prompt) {
         try {
           const charCampaignId = activeStorySession?.campaignId;
@@ -626,6 +632,7 @@ router.post('/story/beat', async (req, res) => {
     const sessionProfiles = getSessionProfiles(campaignId);
     const memoryContext = await retrieveMemoryContext(campaignId, action);
     const protagonist_description = activeStorySession?.protagonist_description;
+    const stage_characters = activeStorySession?.stageCharacters ?? [];
     const inferredLang = inferLanguageFromAction(action);
     const language = activeStorySession?.language || inferredLang || req.body?.language || 'en';
     if (inferredLang && activeStorySession) {
@@ -635,9 +642,10 @@ router.post('/story/beat', async (req, res) => {
     console.log('[BEAT] Profiles:', sessionProfiles.length, sessionProfiles.map((p) => p.label));
     console.log('[BEAT] Chroma memory:', memoryContext ? `${memoryContext.length} chars` : 'none');
     if (protagonist_description) console.log('[BEAT] Protagonist:', protagonist_description);
+    if (stage_characters.length) console.log('[BEAT] Stage characters:', stage_characters.length);
     if (language !== 'en') console.log('[BEAT] Language:', language);
 
-    const beat = await generateSafeBedtimeStoryBeat(action, campaign, storySession, sessionProfiles, memoryContext, { protagonist_description, language });
+    const beat = await generateSafeBedtimeStoryBeat(action, campaign, storySession, sessionProfiles, memoryContext, { protagonist_description, language, stage_characters });
 
     console.log('[BEAT] scene_prompt →', beat.scene_prompt);
 
