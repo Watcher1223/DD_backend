@@ -17,6 +17,8 @@ import storyRoutes from './routes/story.js';
 import livekitRoutes from './routes/livekit.js';
 import { initDb } from './db/index.js';
 import { initChroma, isChromaEnabled } from './memory/chroma.js';
+import { initV2VConnection, isV2VConfigured, getV2VStatus } from './services/v2v.js';
+import { isVeoConfigured } from './ai/veo.js';
 
 const PORT = parseInt(process.env.PORT || '4300', 10);
 
@@ -43,6 +45,8 @@ const wss = new WebSocketServer({ server });
 const wsClients = new Set();
 /** Subscribers to bedtime story audio (Lyria RealTime PCM stream) */
 const storyAudioSubscribers = new Set();
+/** Subscribers to story video frames/clips (V2V + Veo) */
+const storyVideoSubscribers = new Set();
 
 wss.on('connection', (ws) => {
   wsClients.add(ws);
@@ -56,12 +60,17 @@ wss.on('connection', (ws) => {
         storyAudioSubscribers.add(ws);
         console.log('[WS] Subscriber added to story_audio (total ' + storyAudioSubscribers.size + ')');
       }
+      if (msg?.type === 'subscribe' && msg?.channel === 'story_video') {
+        storyVideoSubscribers.add(ws);
+        console.log('[WS] Subscriber added to story_video (total ' + storyVideoSubscribers.size + ')');
+      }
     } catch (_) {}
   });
 
   ws.on('close', () => {
     wsClients.delete(ws);
     storyAudioSubscribers.delete(ws);
+    storyVideoSubscribers.delete(ws);
     console.log(`[WS] Client disconnected (${wsClients.size} total)`);
   });
 });
@@ -104,6 +113,26 @@ app.locals.broadcastStoryAudioEnd = () => {
       if (ws.readyState === 1) {
         ws.send(JSON.stringify({ type: 'music_session_ended' }));
       }
+    } catch (_) {}
+  }
+};
+
+// Send V2V transformed frame to story-video subscribers
+app.locals.broadcastStoryVideoFrame = (frameBase64, metadata) => {
+  const payload = JSON.stringify({ type: 'story_video_frame', frame: frameBase64, ...metadata });
+  for (const ws of storyVideoSubscribers) {
+    try {
+      if (ws.readyState === 1) ws.send(payload);
+    } catch (_) {}
+  }
+};
+
+// Send Veo video clip notification to story-video subscribers
+app.locals.broadcastStoryVideoClip = (clipData) => {
+  const payload = JSON.stringify({ type: 'story_video_clip', ...clipData });
+  for (const ws of storyVideoSubscribers) {
+    try {
+      if (ws.readyState === 1) ws.send(payload);
     } catch (_) {}
   }
 };
@@ -158,6 +187,7 @@ app.get('/', (req, res) => {
 // ── Start ──
 async function start() {
   await initChroma();
+  initV2VConnection();
 
   server.listen(PORT, () => {
     console.log('');
@@ -173,6 +203,8 @@ async function start() {
     console.log(`  Lyria:     ${process.env.GOOGLE_CLOUD_PROJECT ? 'Vertex Lyria 2' : 'required (GOOGLE_CLOUD_PROJECT)'}`);
     console.log(`  Lyria RT:  ${process.env.GEMINI_API_KEY ? 'Gemini API (bedtime story)' : 'use GEMINI_API_KEY for bedtime mode'}`);
     console.log(`  Chroma:    ${isChromaEnabled() ? 'connected (semantic memory)' : 'unavailable (optional)'}`);
+    console.log(`  V2V:       ${isV2VConfigured() ? 'enabled (Overshoot)' : 'disabled (set V2V_SERVICE_URL)'}`);
+    console.log(`  Veo:       ${isVeoConfigured() ? 'enabled (video generation)' : 'disabled (set VEO_ENABLED=true)'}`);
     console.log('');
   });
 }

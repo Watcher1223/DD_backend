@@ -25,6 +25,9 @@ let client = null;
 let appearanceCollection = null;
 let storyCollection = null;
 let stageIdentityCollection = null;
+let characterStateCollection = null;
+let itemInventoryCollection = null;
+let eventChainCollection = null;
 let enabled = false;
 
 let storyDocCounter = 0;
@@ -69,6 +72,15 @@ export async function initChroma() {
     });
     stageIdentityCollection = await client.getOrCreateCollection({
       name: `${COLLECTION_PREFIX}_stage_identity`,
+    });
+    characterStateCollection = await client.getOrCreateCollection({
+      name: `${COLLECTION_PREFIX}_character_state`,
+    });
+    itemInventoryCollection = await client.getOrCreateCollection({
+      name: `${COLLECTION_PREFIX}_item_inventory`,
+    });
+    eventChainCollection = await client.getOrCreateCollection({
+      name: `${COLLECTION_PREFIX}_event_chain`,
     });
 
     enabled = true;
@@ -271,6 +283,235 @@ export async function queryStoryMemories(campaignId, queryText, limit = TOP_K) {
   }
 }
 
+// ── Character State ─────────────────────────────
+
+/**
+ * Upsert a character's current state (location, mood, actions).
+ * @param {number} campaignId
+ * @param {string} characterName
+ * @param {{ location?: string, mood?: string, action?: string, role?: string }} state
+ */
+export async function upsertCharacterState(campaignId, characterName, state) {
+  if (!isAvailable() || !characterStateCollection) return;
+  try {
+    const docId = `charstate_${campaignId}_${characterName.replace(/\s+/g, '_')}`;
+    const doc = `Character: ${characterName}. Location: ${state.location || 'unknown'}. Mood: ${state.mood || 'neutral'}. Action: ${state.action || 'idle'}. Role: ${state.role || 'unknown'}.`;
+    await characterStateCollection.upsert({
+      ids: [docId],
+      documents: [doc],
+      metadatas: [{
+        type: 'character_state',
+        campaignId,
+        characterName,
+        location: state.location || '',
+        mood: state.mood || '',
+        action: state.action || '',
+        role: state.role || '',
+        updatedAt: Date.now(),
+      }],
+    });
+    recordSuccess();
+    console.log(`[CHROMA] Upserted character_state: ${characterName}`);
+  } catch (err) {
+    recordFailure('Character state upsert', err);
+  }
+}
+
+/**
+ * Get a specific character's state.
+ * @param {number} campaignId
+ * @param {string} characterName
+ * @returns {Promise<{ document: string, metadata: object } | null>}
+ */
+export async function getCharacterState(campaignId, characterName) {
+  if (!isAvailable() || !characterStateCollection) return null;
+  try {
+    const docId = `charstate_${campaignId}_${characterName.replace(/\s+/g, '_')}`;
+    const results = await characterStateCollection.get({ ids: [docId] });
+    recordSuccess();
+    const items = zipResults(results);
+    return items.length > 0 ? items[0] : null;
+  } catch (err) {
+    recordFailure('Character state get', err);
+    return null;
+  }
+}
+
+/**
+ * Query characters by semantic context (e.g. "who is near the forest?").
+ * @param {number} campaignId
+ * @param {string} queryText
+ * @param {number} [limit]
+ * @returns {Promise<Array<{ id: string, document: string, metadata: object, distance: number }>>}
+ */
+export async function queryCharactersByContext(campaignId, queryText, limit = TOP_K) {
+  if (!isAvailable() || !characterStateCollection || !queryText?.trim()) return [];
+  try {
+    const results = await characterStateCollection.query({
+      queryTexts: [queryText.trim()],
+      nResults: limit,
+      where: { campaignId },
+    });
+    recordSuccess();
+    return zipQueryResults(results);
+  } catch (err) {
+    recordFailure('Character context query', err);
+    return [];
+  }
+}
+
+// ── Item Inventory ──────────────────────────────
+
+/**
+ * Upsert an item/object in the story inventory.
+ * @param {number} campaignId
+ * @param {string} itemName
+ * @param {{ holder?: string, state?: string, description?: string }} itemData
+ */
+export async function upsertItem(campaignId, itemName, itemData) {
+  if (!isAvailable() || !itemInventoryCollection) return;
+  try {
+    const docId = `item_${campaignId}_${itemName.replace(/\s+/g, '_')}`;
+    const doc = `Item: ${itemName}. Holder: ${itemData.holder || 'none'}. State: ${itemData.state || 'active'}. ${itemData.description || ''}`.trim();
+    await itemInventoryCollection.upsert({
+      ids: [docId],
+      documents: [doc],
+      metadatas: [{
+        type: 'item',
+        campaignId,
+        itemName,
+        holder: itemData.holder || '',
+        state: itemData.state || 'active',
+        updatedAt: Date.now(),
+      }],
+    });
+    recordSuccess();
+    console.log(`[CHROMA] Upserted item: ${itemName}`);
+  } catch (err) {
+    recordFailure('Item upsert', err);
+  }
+}
+
+/**
+ * Get all active items for a campaign.
+ * @param {number} campaignId
+ * @param {number} [limit]
+ * @returns {Promise<Array<{ id: string, document: string, metadata: object }>>}
+ */
+export async function getActiveItems(campaignId, limit = 10) {
+  if (!isAvailable() || !itemInventoryCollection) return [];
+  try {
+    const results = await itemInventoryCollection.get({
+      where: { campaignId },
+      limit,
+    });
+    recordSuccess();
+    return zipResults(results);
+  } catch (err) {
+    recordFailure('Active items get', err);
+    return [];
+  }
+}
+
+/**
+ * Query items by semantic context.
+ * @param {number} campaignId
+ * @param {string} queryText
+ * @param {number} [limit]
+ * @returns {Promise<Array<{ id: string, document: string, metadata: object, distance: number }>>}
+ */
+export async function queryItemsByContext(campaignId, queryText, limit = TOP_K) {
+  if (!isAvailable() || !itemInventoryCollection || !queryText?.trim()) return [];
+  try {
+    const results = await itemInventoryCollection.query({
+      queryTexts: [queryText.trim()],
+      nResults: limit,
+      where: { campaignId },
+    });
+    recordSuccess();
+    return zipQueryResults(results);
+  } catch (err) {
+    recordFailure('Item context query', err);
+    return [];
+  }
+}
+
+// ── Event Chain ─────────────────────────────────
+
+/**
+ * Upsert a causal event chain link (plot thread).
+ * @param {number} campaignId
+ * @param {string} eventId - Unique event identifier
+ * @param {{ description: string, cause?: string, resolved?: boolean, beatIndex?: number }} eventData
+ */
+export async function upsertEventChainLink(campaignId, eventId, eventData) {
+  if (!isAvailable() || !eventChainCollection) return;
+  try {
+    const docId = `event_${campaignId}_${eventId}`;
+    const doc = `Event: ${eventData.description}. Cause: ${eventData.cause || 'none'}. Resolved: ${eventData.resolved ? 'yes' : 'no'}.`;
+    await eventChainCollection.upsert({
+      ids: [docId],
+      documents: [doc],
+      metadatas: [{
+        type: 'event_chain',
+        campaignId,
+        eventId,
+        resolved: eventData.resolved ? 'true' : 'false',
+        beatIndex: eventData.beatIndex ?? -1,
+        updatedAt: Date.now(),
+      }],
+    });
+    recordSuccess();
+    console.log(`[CHROMA] Upserted event_chain: ${eventId}`);
+  } catch (err) {
+    recordFailure('Event chain upsert', err);
+  }
+}
+
+/**
+ * Query unresolved plot events for a campaign.
+ * @param {number} campaignId
+ * @param {number} [limit]
+ * @returns {Promise<Array<{ id: string, document: string, metadata: object }>>}
+ */
+export async function queryUnresolvedEvents(campaignId, limit = 5) {
+  if (!isAvailable() || !eventChainCollection) return [];
+  try {
+    const results = await eventChainCollection.get({
+      where: { $and: [{ campaignId }, { resolved: 'false' }] },
+      limit,
+    });
+    recordSuccess();
+    return zipResults(results);
+  } catch (err) {
+    recordFailure('Unresolved events query', err);
+    return [];
+  }
+}
+
+/**
+ * Query causal chain links by semantic context.
+ * @param {number} campaignId
+ * @param {string} queryText
+ * @param {number} [limit]
+ * @returns {Promise<Array<{ id: string, document: string, metadata: object, distance: number }>>}
+ */
+export async function queryCausalChain(campaignId, queryText, limit = TOP_K) {
+  if (!isAvailable() || !eventChainCollection || !queryText?.trim()) return [];
+  try {
+    const results = await eventChainCollection.query({
+      queryTexts: [queryText.trim()],
+      nResults: limit,
+      where: { campaignId },
+    });
+    recordSuccess();
+    return zipQueryResults(results);
+  } catch (err) {
+    recordFailure('Causal chain query', err);
+    return [];
+  }
+}
+
 // ── Retrieval + Summarization ───────────────────
 
 /**
@@ -311,6 +552,15 @@ export async function clearCampaignMemory(campaignId) {
     if (stageIdentityCollection) {
       await deleteByFilter(stageIdentityCollection, { campaignId });
     }
+    if (characterStateCollection) {
+      await deleteByFilter(characterStateCollection, { campaignId });
+    }
+    if (itemInventoryCollection) {
+      await deleteByFilter(itemInventoryCollection, { campaignId });
+    }
+    if (eventChainCollection) {
+      await deleteByFilter(eventChainCollection, { campaignId });
+    }
 
     for (const [key] of observationCounts) {
       if (key.startsWith(`appearance_${campaignId}_`)) {
@@ -331,14 +581,17 @@ export async function clearCampaignMemory(campaignId) {
  * @returns {Promise<string>}
  */
 async function retrieveMemoryContextInner(campaignId, action) {
-  const [appearances, scenes] = await Promise.all([
+  const [appearances, scenes, characters, items, unresolvedEvents] = await Promise.all([
     getAppearanceMemories(campaignId, 3),
     queryStoryMemories(campaignId, action, 4),
+    queryCharactersByContext(campaignId, action, 3),
+    getActiveItems(campaignId, 5),
+    queryUnresolvedEvents(campaignId, 3),
   ]);
 
-  if (appearances.length === 0 && scenes.length === 0) return '';
+  if (appearances.length === 0 && scenes.length === 0 && characters.length === 0 && items.length === 0 && unresolvedEvents.length === 0) return '';
 
-  return summarizeMemories(appearances, scenes);
+  return summarizeMemories(appearances, scenes, characters, items, unresolvedEvents);
 }
 
 /**
@@ -445,7 +698,7 @@ function buildStoryDocument(event) {
  * @param {Array<{ document: string, metadata: object, distance?: number }>} scenes
  * @returns {string}
  */
-function summarizeMemories(appearances, scenes) {
+function summarizeMemories(appearances, scenes, characters = [], items = [], unresolvedEvents = []) {
   const lines = ['', 'SEMANTIC MEMORY (from prior observations):'];
 
   if (appearances.length > 0) {
@@ -455,6 +708,30 @@ function summarizeMemories(appearances, scenes) {
       const obs = app.metadata?.observationCount;
       const tag = obs > 1 ? ` (seen ${obs} times)` : '';
       lines.push(`- ${app.document}${tag}`);
+    }
+  }
+
+  if (characters.length > 0) {
+    lines.push('');
+    lines.push('Character states:');
+    for (const ch of characters) {
+      lines.push(`- ${ch.document.slice(0, 150)}`);
+    }
+  }
+
+  if (items.length > 0) {
+    lines.push('');
+    lines.push('Active items/objects:');
+    for (const item of items) {
+      lines.push(`- ${item.document.slice(0, 100)}`);
+    }
+  }
+
+  if (unresolvedEvents.length > 0) {
+    lines.push('');
+    lines.push('Unresolved plot threads:');
+    for (const evt of unresolvedEvents) {
+      lines.push(`- ${evt.document.slice(0, 150)}`);
     }
   }
 

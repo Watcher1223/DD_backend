@@ -18,8 +18,17 @@ import { analyzeEmotionFromFrame, mapVisionTextToScene } from '../vision/emotion
 import { analyzeStageVision } from '../vision/stage_vision.js';
 import { generateSceneImage } from '../ai/nanobanana.js';
 import { detectToyInFrame } from '../vision/object_detection.js';
-import { retrieveMemoryContext, upsertStoryMemory, queryStageIdentityByDescription, isReidentificationMatch, upsertStageIdentity } from '../memory/chroma.js';
+import {
+  retrieveMemoryContext, upsertStoryMemory, queryStageIdentityByDescription,
+  isReidentificationMatch, upsertStageIdentity, upsertCharacterState,
+  upsertItem, upsertEventChainLink,
+} from '../memory/chroma.js';
 import { getReferenceFrames } from '../memory/reference_store.js';
+import { isV2VConfigured, getV2VStatus } from '../services/v2v.js';
+import { startV2VPipeline, stopV2VPipeline, updateV2VFrame, updateV2VPrompt } from '../services/v2v_pipeline.js';
+import { enqueueVideoGeneration, getVideoForBeat, getQueueStatus, clearQueue } from '../services/video_queue.js';
+import { isVeoConfigured } from '../ai/veo.js';
+import { isLiveKitConfigured, ensureLiveKitRoom, getActiveLiveKitRoom } from './livekit.js';
 import {
   getCampaign,
   getEventCount,
@@ -164,18 +173,47 @@ router.post('/story/start', async (req, res) => {
       markPromptsApplied({ theme, mood, intensity });
     }
 
-    activeStorySession = { handle, userTheme, campaignId, lastSeenPeopleCount: 0, lastSeenLabels: new Set(), language: req.body?.language || null, stageCharacters: [] };
+    activeStorySession = { handle, userTheme, campaignId, lastSeenPeopleCount: 0, lastSeenLabels: new Set(), language: req.body?.language || null, stageCharacters: [], beatIndex: 0 };
     resetThrottle();
     req.app.locals._lyriaChunkCount = 0;
 
-    const broadcast = req.app.locals.broadcast;
-    const roomPrefix = process.env.LIVEKIT_ROOM_PREFIX || 'story';
-    const roomName = `${roomPrefix}-${campaignId}`;
-    if (broadcast) {
-      broadcast(JSON.stringify({ type: 'livekit_room_ready', roomName, campaignId }));
+    // Start V2V pipeline if configured
+    if (isV2VConfigured()) {
+      const broadcastVideoFrame = req.app.locals.broadcastStoryVideoFrame;
+      if (broadcastVideoFrame) {
+        startV2VPipeline(campaignId, broadcastVideoFrame, () => activeStorySession?.lastScenePrompt || '');
+      }
     }
 
-    res.json({ ok: true, message: 'Bedtime story session started', userTheme: userTheme ?? undefined });
+    // Ensure LiveKit room exists for the campaign (viewers can join immediately)
+    let livekitRoom = null;
+    if (isLiveKitConfigured()) {
+      try {
+        const roomName = await ensureLiveKitRoom(campaignId);
+        livekitRoom = { roomName, url: process.env.LIVEKIT_URL };
+      } catch (err) {
+        console.warn('[STORY] LiveKit room creation warning:', err.message);
+      }
+    }
+
+    const broadcast = req.app.locals.broadcast;
+    const roomPrefix = process.env.LIVEKIT_ROOM_PREFIX || 'story';
+    const roomName = livekitRoom?.roomName || `${roomPrefix}-${campaignId}`;
+    if (broadcast) {
+      broadcast(JSON.stringify({ type: 'livekit_room_ready', roomName, campaignId }));
+      if (isV2VConfigured() || isVeoConfigured()) {
+        broadcast(JSON.stringify({ type: 'livekit_v2v_room', roomName, campaignId, v2v: isV2VConfigured(), veo: isVeoConfigured() }));
+      }
+    }
+
+    res.json({
+      ok: true,
+      message: 'Bedtime story session started',
+      userTheme: userTheme ?? undefined,
+      livekit: livekitRoom || undefined,
+      v2vEnabled: isV2VConfigured(),
+      veoEnabled: isVeoConfigured(),
+    });
   } catch (err) {
     console.error('[STORY] Start failed:', err.message);
     res.status(503).json({
@@ -534,6 +572,51 @@ router.post('/story/set-language', (req, res) => {
 });
 
 /**
+ * POST /api/story/v2v-frame
+ * Accept a camera frame for V2V pipeline processing.
+ * Body: { frame: string (base64) }
+ */
+router.post('/story/v2v-frame', (req, res) => {
+  const { frame } = req.body || {};
+  if (!frame || typeof frame !== 'string') {
+    return res.status(400).json({ error: 'frame is required (base64 encoded image)' });
+  }
+  if (!activeStorySession) {
+    return res.status(409).json({ error: 'No active story session' });
+  }
+
+  const startTime = Date.now();
+  updateV2VFrame(activeStorySession.campaignId, frame);
+  const latencyMs = Date.now() - startTime;
+
+  res.json({ ok: true, latencyMs });
+});
+
+/**
+ * GET /api/story/video-status
+ * Return V2V connection status, Veo queue status, and configuration flags.
+ */
+router.get('/story/video-status', (req, res) => {
+  const campaignId = activeStorySession?.campaignId;
+  const livekitRoom = getActiveLiveKitRoom();
+  res.json({
+    v2v: {
+      configured: isV2VConfigured(),
+      ...getV2VStatus(),
+    },
+    veo: {
+      configured: isVeoConfigured(),
+      queue: campaignId ? getQueueStatus(campaignId) : { pending: 0, completed: 0, failed: 0 },
+    },
+    livekit: {
+      configured: isLiveKitConfigured(),
+      room: livekitRoom || null,
+      viewerTokenEndpoint: isLiveKitConfigured() ? '/api/livekit/viewer-token' : null,
+    },
+  });
+});
+
+/**
  * POST /api/story/stop
  * End the bedtime story session and close Lyria RealTime.
  */
@@ -542,13 +625,19 @@ router.post('/story/stop', (req, res) => {
     return res.status(200).json({ ok: true, message: 'No active session' });
   }
 
+  const campaignId = activeStorySession.campaignId;
+
   try {
     activeStorySession.handle.close();
+    stopV2VPipeline(campaignId);
+    clearQueue(campaignId);
     activeStorySession = null;
     resetThrottle();
     res.json({ ok: true, message: 'Story session stopped' });
   } catch (err) {
     console.error('[STORY] Stop failed:', err.message);
+    stopV2VPipeline(campaignId);
+    clearQueue(campaignId);
     activeStorySession = null;
     resetThrottle();
     res.status(500).json({ error: 'Failed to stop session', details: err.message });
@@ -653,6 +742,13 @@ router.post('/story/beat', async (req, res) => {
     console.log(`[BEAT] Reference frames: ${refs.length}`);
     const image = await generateSceneImage(beat.scene_prompt, refs, campaignId);
 
+    // Track beat index
+    const beatIndex = activeStorySession?.beatIndex ?? 0;
+    if (activeStorySession) {
+      activeStorySession.beatIndex = beatIndex + 1;
+      activeStorySession.lastScenePrompt = beat.scene_prompt;
+    }
+
     const event = {
       action,
       diceRoll: null,
@@ -672,6 +768,38 @@ router.post('/story/beat', async (req, res) => {
     };
     saveStoryBeat(campaignId, event, beat.story_energy);
     upsertStoryMemory(campaignId, event).catch(() => {});
+
+    // Enqueue Veo video clip if configured
+    if (isVeoConfigured()) {
+      const veoPrompt = beat.scene_prompt_motion
+        ? `${beat.scene_prompt}. Motion: ${beat.scene_prompt_motion}`
+        : beat.scene_prompt;
+      const broadcastClip = req.app.locals.broadcastStoryVideoClip;
+      enqueueVideoGeneration(campaignId, beatIndex, veoPrompt, image.imageUrl, broadcastClip);
+    }
+
+    // Update V2V prompt for current scene
+    if (isV2VConfigured() && activeStorySession?.campaignId === campaignId) {
+      updateV2VPrompt(campaignId, beat.scene_prompt);
+    }
+
+    // Upsert character states + event chain to Chroma
+    if (beat.characters_mentioned?.length > 0) {
+      for (const charName of beat.characters_mentioned) {
+        upsertCharacterState(campaignId, charName, {
+          location: beat.location,
+          mood: beat.emotion || beat.mood,
+          action: beat.scene_prompt_motion || 'present in scene',
+          role: 'story character',
+        }).catch(() => {});
+      }
+    }
+    upsertEventChainLink(campaignId, `beat_${beatIndex}`, {
+      description: `${beat.narration?.slice(0, 120)}`,
+      cause: action.slice(0, 100),
+      resolved: true,
+      beatIndex,
+    }).catch(() => {});
 
     if (activeStorySession?.campaignId === campaignId) {
       const scene = {
@@ -694,9 +822,13 @@ router.post('/story/beat', async (req, res) => {
     const langParam = language && language !== 'en' ? `&lang=${encodeURIComponent(language)}` : '';
     const narrationAudioUrl = `${baseUrl}/api/tts?text=${encodeURIComponent(beat.narration)}${langParam}`;
 
+    // Check if a pre-generated video clip exists for this beat
+    const videoClip = getVideoForBeat(campaignId, beatIndex);
+
     res.json({
       narration: beat.narration,
       scene_prompt: beat.scene_prompt,
+      scene_prompt_motion: beat.scene_prompt_motion || undefined,
       image,
       music: {
         theme: beat.theme,
@@ -715,6 +847,8 @@ router.post('/story/beat', async (req, res) => {
       event_number: eventNumber,
       language,
       narrationAudioUrl,
+      videoClip: videoClip || undefined,
+      beatIndex,
     });
   } catch (err) {
     console.error('[STORY] Beat failed:', err.message);

@@ -461,11 +461,13 @@ RULES:
 - Never include violence, fear, death, peril, threats, or anything inappropriate for a child
 - Never break character
 - In scene_prompt, ALWAYS describe the main character prominently in the foreground with their face clearly visible. Never describe a scene without the character featured.
+- Describe scenes with MOTION and ACTION cues (walking, reaching, looking, flying, dancing). Describe a moment of action, not a static pose. This helps the video generator create animated clips.
 
 You must respond with ONLY valid JSON in this exact format (no markdown, no code fences; escape any quotes inside strings with \\ and no newlines inside string values):
 {
   "narration": "Your 2-3 sentence calming narration here",
-  "scene_prompt": "A close-up or medium shot of the main character [describe their appearance] in [scene]. The character's face is clearly visible and prominently featured. Soft lighting, dreamy, child-friendly, storybook illustration style",
+  "scene_prompt": "A close-up or medium shot of the main character [describe their appearance] actively [doing something with motion] in [scene]. The character's face is clearly visible and prominently featured. Soft lighting, dreamy, child-friendly, storybook illustration style",
+  "scene_prompt_motion": "One sentence describing the key motion or action in this scene for video generation, e.g. 'The child reaches up to catch a glowing firefly while walking through tall grass'",
   "theme": "one of: magical forest, bedtime, under the sea, fairy tale, space adventure, calm, fantasy",
   "genre": "fantasy or lullaby",
   "mood": "one of: calm, peaceful, sleepy, gentle, dreamy",

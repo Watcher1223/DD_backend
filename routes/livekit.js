@@ -8,7 +8,7 @@
 // ═══════════════════════════════════════════════
 
 import { Router } from 'express';
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { getActiveStorySession } from './story.js';
 
 const router = Router();
@@ -18,8 +18,65 @@ const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
 const ROOM_PREFIX = process.env.LIVEKIT_ROOM_PREFIX || 'story';
 
-function isLiveKitConfigured() {
+export function isLiveKitConfigured() {
   return !!(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET);
+}
+
+/** RoomServiceClient for creating/managing rooms. */
+let roomService = null;
+function getRoomService() {
+  if (!roomService && isLiveKitConfigured()) {
+    roomService = new RoomServiceClient(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
+  }
+  return roomService;
+}
+
+/**
+ * Ensure a LiveKit room exists for a campaign. Creates it if needed.
+ * Safe to call multiple times (idempotent).
+ * @param {string|number} campaignId
+ * @returns {Promise<string>} The room name
+ */
+export async function ensureLiveKitRoom(campaignId) {
+  const roomName = `${ROOM_PREFIX}-${campaignId}`;
+  const svc = getRoomService();
+  if (!svc) return roomName;
+  try {
+    await svc.createRoom({ name: roomName, emptyTimeout: 300, maxParticipants: 10 });
+    console.log(`[LIVEKIT] Room "${roomName}" ensured`);
+  } catch (err) {
+    // Room may already exist — that's fine
+    if (!err.message?.includes('already exists')) {
+      console.warn(`[LIVEKIT] Room create warning: ${err.message}`);
+    }
+  }
+  return roomName;
+}
+
+/**
+ * Generate a viewer token for a room (used by V2V pipeline / external displays).
+ * @param {string} roomName
+ * @param {string} [identityPrefix]
+ * @returns {Promise<string>} JWT token
+ */
+export async function generateViewerToken(roomName, identityPrefix = 'viewer') {
+  const identity = `${identityPrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, { identity });
+  at.addGrant({ roomJoin: true, room: roomName, canPublish: false, canSubscribe: true });
+  return at.toJwt();
+}
+
+/**
+ * Get the LiveKit room name for the active session (if any).
+ * @returns {{ roomName: string, url: string } | null}
+ */
+export function getActiveLiveKitRoom() {
+  const session = getActiveStorySession();
+  if (!session || !isLiveKitConfigured()) return null;
+  return {
+    roomName: `${ROOM_PREFIX}-${session.campaignId}`,
+    url: LIVEKIT_URL,
+  };
 }
 
 /**
@@ -126,6 +183,29 @@ router.post('/livekit/ingest-started', (req, res) => {
     broadcast(JSON.stringify({ type: 'livekit_egress_active', roomName, trackName: 'camera' }));
   }
   res.json({ ok: true, roomName });
+});
+
+/**
+ * GET /api/livekit/viewer-token
+ * Returns a viewer token for the active story room (no body required).
+ * External displays / phones can use this to watch the live story and V2V output.
+ */
+router.get('/livekit/viewer-token', async (req, res) => {
+  if (!isLiveKitConfigured()) {
+    return res.status(503).json({ error: 'LiveKit not configured' });
+  }
+  const session = getActiveStorySession();
+  if (!session) {
+    return res.status(409).json({ error: 'No active story session' });
+  }
+  const roomName = `${ROOM_PREFIX}-${session.campaignId}`;
+  try {
+    const token = await generateViewerToken(roomName, 'display');
+    res.json({ token, roomName, url: LIVEKIT_URL, role: 'viewer' });
+  } catch (err) {
+    console.error('[LIVEKIT] Viewer token error:', err);
+    res.status(500).json({ error: 'Failed to create viewer token', details: err.message });
+  }
 });
 
 /**
