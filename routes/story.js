@@ -14,7 +14,7 @@ import {
   resetThrottle,
   DEFAULT_WEIGHTED_PROMPTS,
 } from '../ai/music_engine.js';
-import { analyzeEmotionFromFrame } from '../vision/emotion_analysis.js';
+import { analyzeEmotionFromFrame, mapVisionTextToScene } from '../vision/emotion_analysis.js';
 import { analyzeStageVision } from '../vision/stage_vision.js';
 import { generateSceneImage } from '../ai/nanobanana.js';
 import { detectToyInFrame } from '../vision/object_detection.js';
@@ -455,6 +455,57 @@ router.post('/story/vision-object', (req, res) => {
     ok: true,
     protagonist_description: activeStorySession?.protagonist_description ?? null,
     set: !noObject,
+  });
+});
+
+/**
+ * POST /api/story/vision-event
+ * Accept a free-text vision result (e.g. from Overshoot emotion prompt) and map it to music scene signals.
+ * If a story session is active, updates Lyria music accordingly.
+ * Body: { text: string }
+ */
+router.post('/story/vision-event', (req, res) => {
+  const raw = req.body?.text;
+  if (!raw || typeof raw !== 'string') {
+    return res.status(400).json({ error: 'text is required (vision result string)' });
+  }
+
+  const scene = mapVisionTextToScene(raw);
+  let musicUpdated = false;
+
+  if (activeStorySession) {
+    const storySession = getStorySession(activeStorySession.campaignId);
+    const theme = activeStorySession.userTheme || 'bedtime';
+    const fullScene = {
+      theme,
+      mood: scene.mood,
+      intensity: scene.intensity,
+      emotion: scene.emotion,
+      detected_events: scene.detected_events,
+      storyEnergy: storySession?.story_energy,
+    };
+    const result = generateMusicPrompts(fullScene);
+    const { weightedPrompts, theme: t, mood, intensity, stageEventConfig } = result;
+    if (shouldUpdatePrompts({ theme: t, mood, intensity })) {
+      activeStorySession.handle
+        .updatePrompts(weightedPrompts)
+        .then(() => {
+          if (stageEventConfig) {
+            activeStorySession.handle.setMusicGenerationConfig(stageEventConfig);
+          }
+        })
+        .catch((err) => console.warn('[STORY] vision-event music update failed:', err.message));
+      markPromptsApplied({ theme: t, mood, intensity });
+      musicUpdated = true;
+    }
+  }
+
+  res.json({
+    emotion: scene.emotion,
+    mood: scene.mood,
+    intensity: scene.intensity,
+    detected_events: scene.detected_events,
+    musicUpdated,
   });
 });
 
