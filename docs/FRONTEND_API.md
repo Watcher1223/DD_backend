@@ -834,3 +834,5 @@ Use this checklist to verify the full affective bedtime story flow locally (Segm
 | POST | `/api/livekit/ingest-started` | Notify server that client published video (triggers `livekit_ingest_active` broadcast) |
 | POST | `/api/livekit/vision-frame` | Send frame from stream; run stage vision, character injection, Lyria + V2V prompt update |
 | WS | `/` | Real-time `story_update` broadcasts; subscribe `story_audio` for PCM |
+
+**Invite others to join the story:** For the flow where guests scan a QR code and are embedded as characters in the story, see [INVITE_OTHERS_QR.md](./INVITE_OTHERS_QR.md).

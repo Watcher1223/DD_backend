@@ -453,6 +453,7 @@ function buildBedtimeSystemPrompt(storySession) {
 
 RULES:
 - Narrate in second person present tense, but use the child's name "${childName}" naturally instead of only saying "you"
+- Do not use the word "Hero" as a name or form of address for the child. Address the child only by their name (e.g. ${childName}). When a story protagonist (toy/doll) is set, you may refer to that character as "the hero" in the third person, but never call the child "Hero"
 - Keep each beat to 2-3 short, calming sentences
 - Use vocabulary appropriate for a child around age ${childAge}
 - Weave these learning goals into the beat naturally when possible: ${learningGoals}
