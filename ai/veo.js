@@ -26,7 +26,10 @@ function getClient() {
  * @returns {boolean}
  */
 export function isVeoConfigured() {
-  return !!(GEMINI_API_KEY && process.env.VEO_ENABLED === 'true');
+  // Auto-enable when GEMINI_API_KEY is set (Veo 2 included with Gemini API)
+  // Set VEO_ENABLED=false to explicitly disable
+  if (process.env.VEO_ENABLED === 'false') return false;
+  return !!GEMINI_API_KEY;
 }
 
 /**

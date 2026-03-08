@@ -851,6 +851,7 @@ router.post('/story/beat', async (req, res) => {
       narrationAudioUrl,
       videoClip: videoClip || undefined,
       beatIndex,
+      veoEnabled: isVeoConfigured(),
     });
   } catch (err) {
     console.error('[STORY] Beat failed:', err.message);
