@@ -251,6 +251,9 @@ export async function upsertStoryMemory(campaignId, event) {
         location: event.location || '',
         theme: event.theme || '',
         mood: event.mood || '',
+        imageUrl: event.imageUrl || '',
+        imageSource: event.imageSource || '',
+        scene_prompt: event.scene_prompt || '',
       }],
     });
     recordSuccess();
@@ -741,12 +744,13 @@ function summarizeMemories(appearances, scenes, characters = [], items = [], unr
     lines.push('Related prior scenes:');
     for (const scene of ranked.slice(0, 2)) {
       const loc = scene.metadata?.location ? ` [${scene.metadata.location}]` : '';
-      lines.push(`- ${scene.document.slice(0, 200)}${loc}`);
+      const src = scene.metadata?.imageSource ? ` (${scene.metadata.imageSource})` : '';
+      lines.push(`- ${scene.document.slice(0, 200)}${loc}${src}`);
     }
   }
 
   lines.push('');
-  lines.push('Use these memories to maintain visual consistency and narrative continuity.');
+  lines.push('Use these memories to maintain visual consistency and narrative continuity. Each scene must show the character ACTIVELY DOING something (walking, reaching, looking, running) — never static poses.');
 
   return lines.join('\n');
 }

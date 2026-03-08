@@ -861,6 +861,36 @@ router.post('/story/beat', async (req, res) => {
 });
 
 /**
+ * GET /api/story/scenes
+ * Return all story scenes with images for the active campaign.
+ * Frontend uses this to restore scene images that were previously generated
+ * and to check which beats have video clips ready.
+ */
+router.get('/story/scenes', (req, res) => {
+  const campaignId = resolveCampaignId(req);
+  if (campaignId === null) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+
+  const pages = getStoryPages(campaignId);
+  const scenesWithVideo = pages.map((page, i) => {
+    const clip = getVideoForBeat(campaignId, i);
+    return {
+      ...page,
+      beatIndex: i,
+      videoClip: clip || undefined,
+    };
+  });
+
+  res.json({
+    campaignId,
+    scenes: scenesWithVideo,
+    veoEnabled: isVeoConfigured(),
+    veoQueue: getQueueStatus(campaignId),
+  });
+});
+
+/**
  * GET /api/story/export
  * Export bedtime story beats as storybook pages.
  */
