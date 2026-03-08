@@ -144,6 +144,24 @@ The backend does not yet provide a single “streaming story” endpoint; the �
 
 ---
 
+### Frontend: making beat-by-beat feel like continuous video
+
+The backend returns **one image per beat**; each beat can take 10–30 seconds (narration + scene image). To avoid the "image by image" stall and make it feel more like a continuous video:
+
+1. **Keep the previous image on screen** — Do not replace the main view with a full-screen "Creating scene..." spinner. Keep the **last scene image** visible until the next one is ready. If you show a loading state, use a small overlay (e.g. "Drawing next scene…") or a subtle indicator so the story doesn't feel frozen.
+
+2. **Prefetch the next beat** — As soon as the current beat's **narration starts playing** (or when "Auto" is on), **request the next beat** in the background with `action: "What happens next?"`. By the time the current narration ends, the next image may already be ready (or close), so the gap between scenes is shorter. Queue responses by beat order so you always show the correct next image.
+
+3. **Play narration as soon as you have it** — When the next beat response arrives, start playing **`narrationAudioUrl`** immediately. Swap in the new **`image.imageUrl`** when it's loaded (or keep showing the previous image until the new one is ready). That way the story keeps moving even if the image loads a bit later.
+
+4. **Auto-continue** — When the current narration **ends**, if you already have the next beat (from prefetch), show its image and play its narration without another wait. If you don't have it yet, show a brief "Next scene…" on top of the current image and then transition when the response arrives.
+
+5. **Avoid blocking the whole UI** — Use a non-blocking loading state (e.g. small spinner or text near the bottom, or a dimmed overlay that still shows the previous frame) instead of "Creating scene... This may take 10-30 seconds" as the only content. Shorter copy like "Drawing next scene…" or "Loading…" helps the wait feel shorter.
+
+With prefetch + keep previous image visible + auto-continue, the flow becomes: scene 1 visible → narration 1 plays → (prefetch beat 2) → narration 2 starts (scene 2 may already be ready or loading) → scene 2 appears → repeat. The backend stays one-image-per-beat; the frontend makes it feel continuous.
+
+---
+
 ## Real-time video and new characters: backend behavior and frontend integration
 
 ### Does the backend generate video in real time with the user and detect new characters?

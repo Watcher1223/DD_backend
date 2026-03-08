@@ -210,14 +210,16 @@ function cleanScenePromptForCustomization(scenePrompt) {
 
 /**
  * Build the prompt for Imagen 3 Customization following Google's recommended
- * template for person + face mesh references.
+ * template for person + face mesh references. We ask for the FULL SCENE (setting,
+ * action, other elements from Gemini) while preserving the subject's face — not
+ * a portrait-only shot.
  * @param {string} scenePrompt - Original scene prompt from Gemini (already character-forward)
  * @param {string} subjectDesc - Short description of the person
  * @returns {string}
  */
 function buildCustomizationPrompt(scenePrompt, subjectDesc) {
   const cleaned = cleanScenePromptForCustomization(scenePrompt);
-  return `A portrait of ${subjectDesc} [1] with the face structure from [2]: ${cleaned}. Preserve exact facial features, skin tone, and face shape of ${subjectDesc} [1]. Natural human eyes, high quality, 4k, masterpiece, super details, skin texture, soft realistic lighting, vibrant colors.`;
+  return `A scene featuring ${subjectDesc} [1] with the face structure from [2]: ${cleaned}. Preserve exact facial features, skin tone, and face shape of ${subjectDesc} [1]. Show the full scene, setting, and any other elements described. Natural human eyes, high quality, 4k, masterpiece, super details, skin texture, soft realistic lighting, vibrant colors.`;
 }
 
 /**
