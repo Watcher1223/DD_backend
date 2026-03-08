@@ -35,6 +35,31 @@ This document describes the intended **bedtime story** experience and how it map
 
 **Frontend / agent:** Once the session is started, call camera/analyze with the user’s frame, and either detect-object + set-protagonist or vision-object for the doll. Then request beats; the setting comes from the theme and the protagonist from the session.
 
+### How the frontend should send the doll (and is it just from the camera?)
+
+**Yes — the doll is recognized from the camera**, but via a **separate flow** from the one used for people/faces:
+
+- **People/faces** use **`POST /api/camera/analyze`** (and stage-vision). Those frames are used to store faces and detect new entrants as **stage characters**.
+- **The doll** uses **`POST /api/story/detect-object`** (or **`POST /api/story/vision-object`** with a text description). The backend does **not** auto-detect the doll from the same analyze frames; the frontend must explicitly send a frame (or a vision result) for the doll and then set the protagonist.
+
+**Two ways to send the doll:**
+
+1. **Same camera, dedicated “doll” flow (recommended)**  
+   - Point the camera at the doll (or show the doll in frame).  
+   - Capture a frame (e.g. from the same `<video>` as the user’s camera).  
+   - **POST** that frame to **`POST /api/story/detect-object`** with body `{ frame: "<data URL or base64>" }`.  
+   - Response includes `objects` (list of detected toys) and **`protagonist_description`** (e.g. `"small brown bear with red shirt"`).  
+   - Call **`POST /api/story/set-protagonist`** with body `{ protagonist_description: "<that string>" }`.  
+   - From then on, every **`POST /api/story/beat`** uses the doll as the story’s **hero** (main character) in narration and scene prompts. You can run detect-object once when the user “selects” the doll, or periodically (e.g. every 5–10 s) and set-protagonist when the description changes.
+
+2. **External vision (e.g. Overshoot)**  
+   - Use a vision service with a prompt like “Describe any toy, doll, or stuffed animal in a few words, or say ‘no toy’.”  
+   - Send the **text** result to **`POST /api/story/vision-object`** with body `{ text: "small brown bear" }`.  
+   - The backend sets the protagonist from that text; if the text is “no toy” / “none”, it clears the protagonist.
+
+**Difference from “characters”:**  
+The doll is the **story protagonist** (the hero the story is about), not a **stage character** like people who join. Stage characters (people who enter the frame or join via QR) get a character-injection beat and are added to `stageCharacters`; the doll is a single session field (`protagonist_description`) and is woven into every beat as the main character. So the doll is “added to the story” as the hero; it is not added as an extra character card like a new person.
+
 ---
 
 ## 3. Ethan narrates + images as “video”
@@ -116,3 +141,58 @@ To make the story feel like one continuous video (Ethan speaking + images updati
 4. Display each beat’s image as the “current frame” and queue the next so transitions are smooth.
 
 The backend does not yet provide a single “streaming story” endpoint; the “video” is assembled client-side from the sequence of beat responses (narration + image) plus the continuous Lyria music stream.
+
+---
+
+## Real-time video and new characters: backend behavior and frontend integration
+
+### Does the backend generate video in real time with the user and detect new characters?
+
+**Short answers:**
+
+- **Video:** The backend does **not** stream a single video file. It generates **one image per story beat** (each **`POST /api/story/beat`** returns one `image` + `narration` + `narrationAudioUrl`). “Video” in this app = the frontend showing that sequence (image 1 + play narration 1 → image 2 + play narration 2 → …), optionally with auto-continue so the next beat is requested when the previous narration ends.
+- **User in the story:** The user’s face appears in those images only when (1) the frontend has sent at least one frame to **`POST /api/camera/analyze`** before the first beat, and (2) the backend has Vertex Imagen 3 subject customization configured. So the backend uses the **user’s face** for image generation when reference frames exist; it does not “generate video” as a live stream.
+- **New characters:** The backend **does** detect when a **new person** enters the frame and **embeds them into the story**. It does this only when the frontend **sends frames** to the backend. When the frontend sends a frame to **`POST /api/camera/analyze`** or **`POST /api/story/stage-vision`** and the backend sees more people than before (e.g. 0 → 1, or 1 → 2), it:
+  - Treats that as a **new entrant**,
+  - Generates a **character-injection beat** (narration + scene_prompt) for them,
+  - Optionally generates a **character card image** (if `generateImage: true`),
+  - Adds them to the session’s **stage characters** so **subsequent** **`POST /api/story/beat`** responses include them in narration and scene prompts (and thus in the next scene images).
+
+So: **video** = frontend-driven sequence of beats; **new-character detection and embedding** = backend, but only when the frontend sends frames in real time.
+
+### How can the frontend integrate this?
+
+To get **real-time detection** and **embed new characters into the video/story**, the frontend should do the following.
+
+**1. Send frames from the live camera in real time**
+
+- While the story is running (and optionally while “You” or “Stage” is on), periodically **grab a frame** from the live `<video>` (e.g. draw to canvas, `toDataURL('image/jpeg', 0.85)`).
+- Send that frame every **3–5 seconds** to **one** of:
+  - **`POST /api/camera/analyze`** with body `{ frame, campaignId? }` — stores faces, runs stage vision when a story session is active, and returns `people`; when there’s a new entrant, the backend broadcasts **`character_injection`** and **`stage_vision_tick`** on the WebSocket.
+  - **`POST /api/story/stage-vision`** with body `{ frame, generateImage?: true }` — same new-entrant logic and WebSocket events; use when you already have a story session and want stage-vision–only (no profile storage in that call if you use only stage-vision; for reference storage you still need camera/analyze).
+
+So: **live camera → capture frame every few seconds → POST to camera/analyze (or stage-vision)**. The backend then detects new characters in “real time” relative to the frames it receives.
+
+**2. Subscribe to the WebSocket for new-character and tick events**
+
+- Connect to the app WebSocket and subscribe to the channel used for story/camera (e.g. `story_audio` or your main channel).
+- On **`character_injection`**: a new person was detected and added to the story. Payload includes `narration`, `scene_prompt`, optional `imageUrl`, `new_entrant_description`. Use this to show “Someone joined!” and the character card/narration.
+- On **`stage_vision_tick`**: optional; payload has `people_count`, `new_entrant`, `setting`. Use it to show “2 people on stage” or to refresh UI state.
+
+**3. Show the “video” (sequence of beats) and optionally auto-continue**
+
+- **Video:** For each beat, show `image.imageUrl` and play `narrationAudioUrl`. When the narration ends (or after a short delay), call **`POST /api/story/beat`** with `action: "What happens next?"` (or the user’s input) to get the next “frame.” Repeat. That’s the “video” (one image per beat, in order).
+- **Auto-continue:** To make it feel continuous, when one narration finishes, automatically request the next beat with `"What happens next?"` so the next image + narration appear without the user clicking each time.
+- Because the backend has already added new entrants to **stage characters**, the **next** beat (and all following beats) will include them in the narration and scene; the frontend doesn’t need to do anything extra beyond sending frames and requesting beats.
+
+**4. Optional: use camera/analyze for both face reference and new-character detection**
+
+- Sending the same live frames to **`POST /api/camera/analyze`** (with `campaignId`) gives you: (a) reference frames for the user’s face (and anyone else in frame), and (b) new-entrant detection and character injection when a story session is active. So one endpoint can drive both “user in the story” and “new character embedded” as long as the frontend sends frames in real time.
+
+### Summary
+
+| Question | Answer |
+|----------|--------|
+| Does the backend generate video in real time? | No single video stream. It returns **one image per beat**. The frontend builds “video” by showing each beat’s image + narration in sequence (and optionally auto-requesting the next beat). |
+| Does it detect new characters and embed them? | **Yes**, when the frontend sends frames. On new entrant, backend generates character injection, adds them to stage characters, and broadcasts **`character_injection`**. Subsequent beats then include them in the story. |
+| How does the frontend integrate? | (1) Send **live camera frames** every 3–5 s to **`POST /api/camera/analyze`** (or **`POST /api/story/stage-vision`**). (2) Subscribe to **WebSocket** and handle **`character_injection`** (and optionally **`stage_vision_tick`**). (3) Show the **video** as the sequence of beat images + narration; optionally **auto-continue** by requesting the next beat when narration ends. |

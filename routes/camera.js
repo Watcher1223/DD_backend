@@ -194,7 +194,9 @@ router.post('/camera/pair', (req, res) => {
   }
 
   const { code, expiresAt } = createPairing(campaignId);
-  const baseUrl = `${req.protocol}://${req.get('host')}`;
+  // Use PUBLIC_BASE_URL when set so the QR code opens on the phone (localhost is not reachable from the phone).
+  const publicBase = process.env.PUBLIC_BASE_URL?.trim().replace(/\/$/, '');
+  const baseUrl = publicBase || `${req.protocol}://${req.get('host')}`;
   const phoneUrl = `${baseUrl}/phone-camera.html?code=${code}`;
 
   res.json({ code, phoneUrl, expiresAt });

@@ -146,6 +146,18 @@ app.use('/api', storyRoutes);
 app.use('/api', livekitRoutes);
 
 // ── Root ──
+function getPublicWebSocketUrl() {
+  const base = process.env.PUBLIC_BASE_URL?.trim().replace(/\/$/, '');
+  if (!base) return `ws://localhost:${PORT}`;
+  try {
+    const u = new URL(base);
+    const wsScheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsScheme}//${u.host}`;
+  } catch {
+    return `ws://localhost:${PORT}`;
+  }
+}
+
 app.get('/', (req, res) => {
   res.json({
     name: 'Living Worlds — Bedtime Story Engine',
@@ -180,7 +192,7 @@ app.get('/', (req, res) => {
       livekitIngestStarted: 'POST /api/livekit/ingest-started',
       livekitVisionFrame: 'POST /api/livekit/vision-frame',
     },
-    websocket: `ws://localhost:${PORT}`,
+    websocket: getPublicWebSocketUrl(),
   });
 });
 

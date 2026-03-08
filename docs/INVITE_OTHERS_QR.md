@@ -21,6 +21,31 @@ So: **yes, other people can join the frame/story by scanning the QR code; they a
 
 ---
 
+## Why the QR code didn’t open on your phone (localhost)
+
+The QR code does **not** need to be “from” the backend in the sense of the backend serving the QR image — the **frontend** generates the QR from the `phoneUrl` returned by **`POST /api/camera/pair`**. The backend only provides that URL.
+
+**Problem:** When you use the app at **`http://localhost:4300`**, the backend builds `phoneUrl` from the request’s host, so it returns something like `http://localhost:4300/phone-camera.html?code=XXXXXX`. When someone **scans that QR on their phone**, the phone tries to open **localhost** — but on the phone, “localhost” means the **phone itself**, not your computer. So the page never loads.
+
+**Solutions (pick one):**
+
+1. **Backend (recommended for local dev):** Set **`PUBLIC_BASE_URL`** in `.env` to your machine’s **LAN IP** (same Wi‑Fi as the phone), e.g. `http://192.168.1.5:4300`. Restart the server. Then **`POST /api/camera/pair`** will return a `phoneUrl` with that host, and the QR code will open on the phone. (Find your LAN IP: Mac/Linux `ifconfig` or System Preferences → Network; Windows `ipconfig`.)
+2. **Frontend:** After calling **`POST /api/camera/pair`**, replace the host in `phoneUrl` with a configurable base URL (e.g. from env like `VITE_PHONE_BASE_URL` or a “Server URL” setting) before generating the QR. Use the same LAN IP so the phone can reach the server.
+3. **Quick test:** Open the **host app** in the browser using the LAN IP (e.g. `http://192.168.1.5:4300`) instead of localhost. Then the backend’s `req.get('host')` is already the LAN IP, so the returned `phoneUrl` works on the phone without any env or frontend change.
+
+For **production**, use your real domain in `PUBLIC_BASE_URL` (or have the frontend use it) so the QR works for anyone.
+
+### Hosted backend (e.g. Railway)
+
+For the hosted backend at **https://ddbackend-production.up.railway.app** (or your own deployment):
+
+- **Set `PUBLIC_BASE_URL`** in the deployment environment to the public URL of the backend, e.g. `https://ddbackend-production.up.railway.app`. Then:
+  - **`POST /api/camera/pair`** returns a `phoneUrl` like `https://ddbackend-production.up.railway.app/phone-camera.html?code=XXXXXX`, so the QR code works when the guest scans it on their phone (no localhost).
+  - **`GET /`** (root) returns **`websocket: "wss://ddbackend-production.up.railway.app"`** so the frontend can connect to the correct WebSocket URL for real-time events (e.g. `character_injection`, `profiles_updated`).
+- The frontend should use the **hosted API base** for all requests (e.g. `https://ddbackend-production.up.railway.app`) and the **`websocket`** value from `GET /` (or derive `wss://` from the same host) so the connection is consistent.
+
+---
+
 ## What the frontend should implement
 
 ### 1. “Invite others” or “Scan to join” entry point
@@ -53,9 +78,7 @@ So: **yes, other people can join the frame/story by scanning the QR code; they a
     // Show code on screen
     // Generate QR from phoneUrl and show <img src={qrDataUrl} /> or canvas
     ```
-- **Important:** `phoneUrl` must be reachable from the **guest’s phone**. On local dev, use the machine’s **LAN IP** (e.g. `http://192.168.1.5:4300`) in the URL, not `localhost`. The backend returns whatever host the client used; if your frontend is opened via `http://localhost:4300`, the returned `phoneUrl` may say `localhost` and won’t work on the phone. So either:
-  - Serve the app from `http://<LAN_IP>:4300` when testing on phone, or
-  - Have the frontend replace the host in `phoneUrl` with a configurable “server URL” (e.g. from env or settings) before generating the QR code.
+- **Important:** `phoneUrl` must be reachable from the **guest’s phone**. The backend uses the request’s host by default; if the app is opened at `http://localhost:4300`, `phoneUrl` will contain `localhost` and won’t work when scanned on a phone. Set **`PUBLIC_BASE_URL`** in `.env` to your machine’s LAN IP (e.g. `http://192.168.1.5:4300`) so the returned `phoneUrl` is phone-reachable, or have the frontend replace the host in `phoneUrl` with a configurable base URL before generating the QR. See **“Why the QR code didn’t open on your phone (localhost)”** above.
 
 ### 3. Use the built-in phone camera page (no extra backend work)
 
