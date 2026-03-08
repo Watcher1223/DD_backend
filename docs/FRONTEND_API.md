@@ -634,7 +634,7 @@ Bedtime story beat: Gemini generates narration using the configured child profil
 }
 ```
 
-The response also includes **`narrationAudioUrl`** (same-origin TTS URL with `&lang=<code>` when not English) and **`language`** (the code used for this beat).
+The response also includes **`narrationAudioUrl`** (same-origin TTS URL with `&lang=<code>` when not English), **`language`** (the code used for this beat), and **`imageUsedYourFace`** (boolean): `true` when the scene image used your face (Vertex Imagen 3 subject customization); `false` when the image was text-only (generic character). Use this to show “Your face was used” or to explain why the AI showed a random person — see [WHY_RANDOM_PEOPLE.md](./WHY_RANDOM_PEOPLE.md).
 
 **Errors:**
 

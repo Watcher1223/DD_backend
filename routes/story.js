@@ -830,6 +830,8 @@ router.post('/story/beat', async (req, res) => {
       scene_prompt: beat.scene_prompt,
       scene_prompt_motion: beat.scene_prompt_motion || undefined,
       image,
+      /** True when the scene image used your face (Vertex Imagen 3 subject customization). False when image was text-only (generic character). */
+      imageUsedYourFace: image.source === 'imagen_custom',
       music: {
         theme: beat.theme,
         genre: beat.genre,
