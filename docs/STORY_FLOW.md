@@ -146,6 +146,8 @@ The backend does not yet provide a single “streaming story” endpoint; the �
 
 ### Frontend: making beat-by-beat feel like continuous video
 
+**Full implementation guide:** [FRONTEND_VIDEO_RENDERING.md](./FRONTEND_VIDEO_RENDERING.md) — request/prefetch, state, loading UX, and ordering.
+
 The backend returns **one image per beat**; each beat can take 10–30 seconds (narration + scene image). To avoid the "image by image" stall and make it feel more like a continuous video:
 
 1. **Keep the previous image on screen** — Do not replace the main view with a full-screen "Creating scene..." spinner. Keep the **last scene image** visible until the next one is ready. If you show a loading state, use a small overlay (e.g. "Drawing next scene…") or a subtle indicator so the story doesn't feel frozen.

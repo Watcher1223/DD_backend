@@ -436,8 +436,18 @@ router.post('/story/stage-vision', async (req, res) => {
     });
   } catch (err) {
     console.error('[STORY] Stage-vision failed:', err.message);
-    const status = err.message?.includes('required') || err.message?.includes('Gemini') ? 503 : 500;
-    res.status(status).json({ error: 'Stage vision failed', details: err.message });
+    const isConfigError = /required|Gemini|API key/i.test(err.message);
+    if (isConfigError) {
+      return res.status(503).json({ error: 'Stage vision failed', details: err.message });
+    }
+    // Soft failure (e.g. invalid JSON): return 200 with safe payload so frontend keeps working
+    res.status(200).json({
+      new_entrant: false,
+      people_count: activeStorySession?.lastSeenPeopleCount ?? 0,
+      character_beat: undefined,
+      imageUrl: undefined,
+      error: err.message || 'Stage vision failed',
+    });
   }
 });
 

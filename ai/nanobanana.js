@@ -85,8 +85,9 @@ async function generateWithImagen(scenePrompt) {
 
 /**
  * Generate a personalized scene image using Imagen 3 Subject Customization.
- * Sends up to 4 reference photos as REFERENCE_TYPE_SUBJECT so the generated
- * image preserves the user's actual likeness.
+ * Sends reference photo(s) as REFERENCE_TYPE_SUBJECT plus one REFERENCE_TYPE_CONTROL (face mesh).
+ * Vertex allows at most 2 reference images for non-square aspect ratio (16:9), so we send
+ * exactly 1 subject + 1 control when using 16:9.
  * @param {string} scenePrompt - Scene description from Gemini
  * @param {Array<{ data: string, mimeType: string, subjectDescription: string }>} referenceFrames
  * @param {number} [campaignId] - Campaign ID for canonical description lookup
@@ -101,29 +102,32 @@ async function generateWithSubjectCustomization(scenePrompt, referenceFrames, ca
     const subjectDesc = canonical || pickRichestDescription(referenceFrames);
     const customPrompt = buildCustomizationPrompt(scenePrompt, subjectDesc);
 
-    const referenceImages = referenceFrames.map((frame) => ({
-      referenceType: 'REFERENCE_TYPE_SUBJECT',
-      referenceId: 1,
-      referenceImage: { bytesBase64Encoded: frame.data },
-      subjectImageConfig: {
-        subjectDescription: subjectDesc,
-        subjectType: 'SUBJECT_TYPE_PERSON',
+    // Vertex allows max 2 reference images for non-square aspect ratio (16:9). Use 1 subject + 1 control.
+    const subjectFrame = referenceFrames[0];
+    const referenceImages = [
+      {
+        referenceType: 'REFERENCE_TYPE_SUBJECT',
+        referenceId: 1,
+        referenceImage: { bytesBase64Encoded: subjectFrame.data },
+        subjectImageConfig: {
+          subjectDescription: subjectDesc,
+          subjectType: 'SUBJECT_TYPE_PERSON',
+        },
       },
-    }));
-
-    referenceImages.push({
-      referenceType: 'REFERENCE_TYPE_CONTROL',
-      referenceId: 2,
-      referenceImage: { bytesBase64Encoded: referenceFrames[0].data },
-      controlImageConfig: {
-        controlType: 'CONTROL_TYPE_FACE_MESH',
-        enableControlImageComputation: true,
+      {
+        referenceType: 'REFERENCE_TYPE_CONTROL',
+        referenceId: 2,
+        referenceImage: { bytesBase64Encoded: subjectFrame.data },
+        controlImageConfig: {
+          controlType: 'CONTROL_TYPE_FACE_MESH',
+          enableControlImageComputation: true,
+        },
       },
-    });
+    ];
 
     const url = `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${GOOGLE_CLOUD_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/${IMAGEN_CUSTOM_MODEL}:predict`;
 
-    console.log(`[IMAGEN_CUSTOM] Generating with ${referenceFrames.length} subject ref(s) + face mesh, subject: "${subjectDesc}"`);
+    console.log(`[IMAGEN_CUSTOM] Generating with 1 subject ref + face mesh (max 2 for 16:9), subject: "${subjectDesc}"`);
 
     const res = await fetch(url, {
       method: 'POST',

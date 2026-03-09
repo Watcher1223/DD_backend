@@ -23,12 +23,11 @@ function getClient() {
 
 /**
  * Whether Veo video generation is configured and enabled.
+ * Opt-in only: set VEO_ENABLED=true (Veo API can return 400 "Unsupported request" depending on region/model).
  * @returns {boolean}
  */
 export function isVeoConfigured() {
-  // Auto-enable when GEMINI_API_KEY is set (Veo 2 included with Gemini API)
-  // Set VEO_ENABLED=false to explicitly disable
-  if (process.env.VEO_ENABLED === 'false') return false;
+  if (process.env.VEO_ENABLED !== 'true') return false;
   return !!GEMINI_API_KEY;
 }
 

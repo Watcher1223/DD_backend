@@ -4,6 +4,8 @@ Backend API and real-data contract for the Living Worlds AI Dungeon Master front
 
 **Frontend integration guide (order of operations, code examples):** see **[FRONTEND.md](./FRONTEND.md)**.
 
+**How to implement beat-by-beat “video” rendering (prefetch, no full-screen loading):** see **[FRONTEND_VIDEO_RENDERING.md](./FRONTEND_VIDEO_RENDERING.md)**.
+
 ---
 
 ## Base URL & environment
@@ -601,6 +603,8 @@ Returns Lyria chunk count and session state (for debugging no-audio). **Response
 
 Bedtime story beat: Gemini generates narration using the configured child profile, learning goals, stored camera appearances, and current story energy. The backend validates safety, generates an illustration, persists the page, and updates Lyria prompts when a story session is active.
 
+**Implementing the “video” (one image per beat):** See **[FRONTEND_VIDEO_RENDERING.md](./FRONTEND_VIDEO_RENDERING.md)** for how to request beats, prefetch the next, keep the previous image on screen, and avoid a full-screen “Creating scene…” wait.
+
 **Request body:** `{ "action": "string", "campaignId": 1, "language": "sw" }`
 
 - **`action`** (required) — What happens next (e.g. "The hero finds a cozy cave"). You can also request a language switch in the action text (e.g. "Continue the story in Swahili" or "Tell it in Russian"); the backend infers the language and uses it for this beat and for TTS, and keeps that language for subsequent beats until the user asks for another.
@@ -642,6 +646,22 @@ The response also includes **`narrationAudioUrl`** (same-origin TTS URL with `&l
 - `404` — Campaign not found
 - `409` — Story session not configured; call `POST /api/story/configure` first
 - `503` — Gemini, image generation, or safety validation failed
+
+### WebSocket: story video clips (Veo)
+
+To receive **video clips** (real motion, e.g. character walking in the forest) when Veo is enabled, subscribe to the **`story_video`** channel:
+
+```json
+{ "type": "subscribe", "channel": "story_video" }
+```
+
+When a clip is ready, the server sends:
+
+| Type | Payload | When |
+|------|---------|------|
+| `story_video_clip` | `{ beatIndex, videoUrl, durationSeconds, source: 'veo', campaignId, completedAt }` | After Veo finishes generating a clip for that beat. Use **`videoUrl`** in a `<video src="...">` to show motion; **`beatIndex`** matches the beat you are displaying. |
+
+Clips are generated asynchronously (often after the beat response), so show the static **`image.imageUrl`** first and switch to **`videoUrl`** when you get this message for the current beat. See [FRONTEND_VIDEO_RENDERING.md § 3.1](./FRONTEND_VIDEO_RENDERING.md).
 
 ### `GET /api/story/export`
 
@@ -735,7 +755,13 @@ The server broadcasts the following JSON messages to all connected clients when 
 
 ## WebSocket
 
-Connect to `ws://localhost:4300` (or `wss://` in production).
+Connect to `ws://localhost:4300` (or `wss://` in production). Prefer using the **`websocket`** value from **`GET /`** so the URL matches the backend (e.g. when using `PUBLIC_BASE_URL`).
+
+**If you see "WebSocket is closed before the connection is established":**
+- Ensure the backend is running on the port you connect to (e.g. `npm run dev` on 4300).
+- Use the same host as your API (e.g. if API is `http://localhost:4300`, connect to `ws://localhost:4300` with **no path** or a single slash).
+- If the frontend runs on another origin (e.g. React on `:3000`, backend on `:4300`), the WebSocket URL must point at the backend host/port; the server does not validate Origin, but the connection can be closed by the browser or a proxy if the handshake fails. Try opening `GET http://localhost:4300/` in the browser to confirm the backend is reachable, then use the returned `websocket` value for the WebSocket URL in your app.
+- Avoid connecting before the backend is ready (e.g. wait for your API health or `GET /` to succeed, then open the WebSocket).
 
 **Messages from server:**
 

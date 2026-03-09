@@ -13,14 +13,18 @@
  */
 export function parseGeminiJson(raw, defaults) {
   let text = (raw || '').trim();
-  // Strip markdown code block if present (anywhere in string, not only full match)
+  // Strip common leading prose so we can find JSON
+  text = text.replace(/^Here\s+is\s+the\s+JSON\s+requested[:\s]*/i, '').trim();
+  // Strip markdown code block: optional full ```json ... ``` or open ``` without close (take rest as content)
   const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (codeBlockMatch) {
     text = codeBlockMatch[1].trim();
+  } else if (text.startsWith('```')) {
+    text = text.replace(/^```(?:json)?\s*/i, '').trim();
   }
   // Strip // comments before brace-trimming so trailing braces aren't lost
   text = stripJsonComments(text);
-  // Strip leading/trailing prose (e.g. "Here is the JSON requested:")
+  // Strip leading/trailing prose (e.g. remaining "Here is..." or trailing explanation)
   const firstBrace = text.indexOf('{');
   if (firstBrace !== -1) {
     text = text.slice(firstBrace);
